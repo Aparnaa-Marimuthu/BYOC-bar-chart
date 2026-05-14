@@ -14,7 +14,8 @@ import type {
 
 let chartInstance: Chart | null = null;
 
-function renderChart(chartModel: ChartModel): void {
+function render(ctx: CustomChartContext): void {
+    const chartModel = ctx.getChartModel();
     const canvas = document.getElementById('chart') as HTMLCanvasElement;
 
     if (chartInstance) {
@@ -22,7 +23,6 @@ function renderChart(chartModel: ChartModel): void {
         chartInstance = null;
     }
 
-    // Guard: if no data yet, don't try to render
     if (!chartModel.data || !chartModel.data[0] || !chartModel.data[0].data) {
         console.warn('No data received yet');
         return;
@@ -33,20 +33,17 @@ function renderChart(chartModel: ChartModel): void {
         dataValue: any[];
     }>;
 
-    // Guard: if no columns, don't render
     if (!dataColumns || dataColumns.length === 0) {
         console.warn('Empty data received');
         return;
     }
 
-    // First column = labels (categories), Second column = values (numbers)
     const labelColumn = dataColumns[0];
     const valueColumn = dataColumns[1];
 
     const labels = labelColumn.dataValue.map((val: any) => String(val));
     const values = valueColumn.dataValue.map((val: any) => Number(val));
 
-    // Find the column name from chartModel.columns using columnId
     const matchedColumn = chartModel.columns.find(
         (col) => col.id === valueColumn.columnId
     );
@@ -55,7 +52,7 @@ function renderChart(chartModel: ChartModel): void {
     chartInstance = new Chart(canvas, {
         type: 'bar',
         data: {
-            labels: labels,
+            labels,
             datasets: [
                 {
                     label: datasetLabel,
@@ -84,19 +81,31 @@ function renderChart(chartModel: ChartModel): void {
     });
 }
 
-const init = async () => {
-    const ctx: CustomChartContext = await getChartContext({
+// RenderStart, RenderError, RenderComplete all inside renderChart
+const renderChart = async (ctx: CustomChartContext): Promise<void> => {
+    try {
+        ctx.emitEvent(ChartToTSEvent.RenderStart);
+        render(ctx);
+    } catch (e) {
+        ctx.emitEvent(ChartToTSEvent.RenderError, {
+            hasError: true,
+            error: e,
+        });
+    } finally {
+        ctx.emitEvent(ChartToTSEvent.RenderComplete);
+    }
+};
 
+(async () => {
+    await getChartContext({
         getDefaultChartConfig: (chartModel: ChartModel): ChartConfig[] => {
             const cols = chartModel.columns;
-
             const dimensionColumns = cols.filter(
                 (col: ChartColumn) => col.type === ColumnType.ATTRIBUTE
             );
             const measureColumns = cols.filter(
                 (col: ChartColumn) => col.type === ColumnType.MEASURE
             );
-
             return [
                 {
                     key: 'default',
@@ -122,18 +131,10 @@ const init = async () => {
             }));
         },
 
-        // tells ThoughtSpot this chart has no visual properties panel
         visualPropEditorDefinition: {
             elements: [],
         },
 
-        renderChart: async (ctx: CustomChartContext): Promise<void> => {
-            renderChart(ctx.getChartModel());
-        },
+        renderChart,
     });
-
-    await ctx.initialize();
-    ctx.emitEvent(ChartToTSEvent.RenderStart);
-};
-
-init();
+})();
