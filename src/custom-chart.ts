@@ -15,11 +15,12 @@ import type {
 // The currently drawn chart — stored so we can destroy it before redrawing
 let chartInstance: Chart | null = null;
 
-function render(ctx: CustomChartContext): void {
-    // Get the data ThoughtSpot sent
-    const chartModel = ctx.getChartModel();
+// Stores the raw data globally so right-click handler can identify which bar was clicked
+let globalRawData: { columns: string[]; dataValue: any[][] } | null = null;
+let globalChartModel: ChartModel | null = null;
 
-    // Find the canvas element in index.html to draw on
+function render(ctx: CustomChartContext): void {
+    const chartModel = ctx.getChartModel();
     const canvas = document.getElementById('chart') as HTMLCanvasElement;
 
     // Wipe the existing chart before drawing a new one
@@ -43,6 +44,10 @@ function render(ctx: CustomChartContext): void {
     if (!rawData.dataValue || rawData.dataValue.length === 0) {
         return;
     }
+
+    // Store globally for right-click handler
+    globalRawData = rawData;
+    globalChartModel = chartModel;
 
     // Find label column info — check if it's a date type (dataType 7 = DATE in ThoughtSpot)
     const labelColumnId = rawData.columns[0];
@@ -68,7 +73,7 @@ function render(ctx: CustomChartContext): void {
     // The name shown in the chart legend
     const datasetLabel = valueColumnInfo?.name ?? 'Value';
 
-    // Draw the horizontal bar chart on the canvas
+    // Draw the horizontal bar chart with left-to-right grow animation
     chartInstance = new Chart(canvas, {
         type: 'bar',
         data: {
@@ -87,13 +92,87 @@ function render(ctx: CustomChartContext): void {
             indexAxis: 'y', // Makes the bar chart horizontal
             responsive: true,
             maintainAspectRatio: false,
+            // Bars grow from left to right every time chart renders
+            animation: {
+                duration: 800,
+                easing: 'easeInOutQuart',
+            },
             plugins: {
                 legend: { display: true },
             },
             scales: {
                 x: { beginAtZero: true },
             },
+            // Capture right-click on bars to open ThoughtSpot's native context menu
+            onHover: (event, elements) => {
+                const canvas = event.native?.target as HTMLCanvasElement;
+                if (canvas) {
+                    canvas.style.cursor = elements.length > 0 ? 'pointer' : 'default';
+                }
+            },
         },
+    });
+
+    // Attach right-click handler to canvas after chart is drawn
+    attachRightClickHandler(canvas, ctx);
+}
+
+function attachRightClickHandler(canvas: HTMLCanvasElement, ctx: CustomChartContext): void {
+    // Remove any existing right-click listener to avoid duplicates
+    const newCanvas = canvas.cloneNode(true) as HTMLCanvasElement;
+    canvas.parentNode?.replaceChild(newCanvas, canvas);
+
+    // Re-get the canvas after replacement
+    const freshCanvas = document.getElementById('chart') as HTMLCanvasElement;
+
+    freshCanvas.addEventListener('contextmenu', (event: MouseEvent) => {
+        // Stop browser's default right-click menu from appearing
+        event.preventDefault();
+
+        if (!globalRawData || !globalChartModel || !chartInstance) return;
+
+        // Find which bar was right-clicked using Chart.js's getElementsAtEventForMode
+        const points = chartInstance.getElementsAtEventForMode(
+            event,
+            'nearest',
+            { intersect: true },
+            false
+        );
+
+        if (points.length === 0) return;
+
+        // Get the index of the clicked bar
+        const clickedIndex = points[0].index;
+        const clickedRow = globalRawData.dataValue[clickedIndex];
+
+        if (!clickedRow) return;
+
+        // Get the label column ID — this is what ThoughtSpot uses to filter
+        const labelColumnId = globalRawData.columns[0];
+
+        // Build the clicked point — tells ThoughtSpot which data point was clicked
+        const clickedPoint = {
+            tuple: [
+                {
+                    columnId: labelColumnId,
+                    value: clickedRow[0], // the actual value of the clicked bar label
+                },
+            ],
+        };
+
+        // Open ThoughtSpot's native context menu at the cursor position
+        ctx.emitEvent(ChartToTSEvent.OpenContextMenu, {
+            event: {
+                clientX: event.clientX,
+                clientY: event.clientY,
+            },
+            clickedPoint,
+        });
+    });
+
+    // Left click anywhere closes the context menu
+    freshCanvas.addEventListener('click', () => {
+        ctx.emitEvent(ChartToTSEvent.CloseContextMenu);
     });
 }
 
@@ -145,24 +224,23 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
             {
                 key: 'default',
                 label: 'Bar Chart Configuration',
-                // descriptionText is valid here at top level only — not inside columnSections
                 descriptionText: 'X Axis accepts text or date columns. Y Axis accepts number columns only.',
                 columnSections: [
                     {
                         key: 'x',
                         label: 'X Axis — Categories / Labels',
-                        allowAttributeColumns: true,  // allows text and date columns
-                        allowMeasureColumns: false,    // blocks number columns
-                        allowTimeSeriesColumns: true,  // allows date columns like Month(Calendar Date)
-                        maxColumnCount: 1,             // only 1 column allowed
+                        allowAttributeColumns: true,
+                        allowMeasureColumns: false,
+                        allowTimeSeriesColumns: true,
+                        maxColumnCount: 1,
                     },
                     {
                         key: 'y',
                         label: 'Y Axis — Values / Numbers',
-                        allowAttributeColumns: false,  // blocks text columns
-                        allowMeasureColumns: true,     // allows number columns only
-                        allowTimeSeriesColumns: false, // blocks date columns
-                        maxColumnCount: 1,             // only 1 column allowed
+                        allowAttributeColumns: false,
+                        allowMeasureColumns: true,
+                        allowTimeSeriesColumns: false,
+                        maxColumnCount: 1,
                     },
                 ],
             },
