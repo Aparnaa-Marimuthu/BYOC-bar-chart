@@ -15,7 +15,6 @@ import type {
 let chartInstance: Chart | null = null;
 
 function renderChart(chartModel: ChartModel): void {
-    console.log('chartModel:', JSON.stringify(chartModel, null, 2));
     const canvas = document.getElementById('chart') as HTMLCanvasElement;
 
     if (chartInstance) {
@@ -123,7 +122,11 @@ const init = async () => {
             }));
         },
 
-        // Fixed: now returns Promise<void>
+        // tells ThoughtSpot this chart has no visual properties panel
+        visualPropEditorDefinition: {
+            elements: [],
+        },
+
         renderChart: async (ctx: CustomChartContext): Promise<void> => {
             renderChart(ctx.getChartModel());
         },
