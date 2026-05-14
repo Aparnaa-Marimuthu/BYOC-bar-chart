@@ -132,6 +132,7 @@ const init = async () => {
         },
     });
 
+    await ctx.initialize();
     ctx.emitEvent(ChartToTSEvent.RenderStart);
 };
 
