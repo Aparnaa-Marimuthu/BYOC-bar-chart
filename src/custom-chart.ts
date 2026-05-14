@@ -32,36 +32,53 @@ function render(ctx: CustomChartContext): void {
         return;
     }
 
-    const dataColumns = chartModel.data[0].data as unknown as Array<{
-        columnId: string;
-        dataValue: any[];
-    }>;
+    // Real ThoughtSpot data: { columns: [...ids], dataValue: [[row1], [row2], ...] }
+    const rawData = chartModel.data[0].data as unknown as {
+        columns: string[];
+        dataValue: any[][];
+    };
 
-    log('Raw data[0].data:', JSON.stringify(chartModel.data[0].data, null, 2));
-    log('dataColumns count:', dataColumns.length);
+    log('Row count:', rawData.dataValue?.length);
+    log('Column IDs:', rawData.columns);
+    log('Sample row[0]:', rawData.dataValue?.[0]);
 
-    if (!dataColumns || dataColumns.length === 0) {
-        log('WARNING: dataColumns is empty');
+    if (!rawData.dataValue || rawData.dataValue.length === 0) {
+        log('WARNING: dataValue is empty');
         return;
     }
 
-    log('dataColumns count:', dataColumns.length);
-    log('First column sample:', dataColumns[0]?.dataValue?.slice(0, 3));
-    log('Second column sample:', dataColumns[1]?.dataValue?.slice(0, 3));
+    // Find label column info
+    const labelColumnId = rawData.columns[0];
+    const labelColumnInfo = chartModel.columns.find(col => col.id === labelColumnId);
+    log('Label column name:', labelColumnInfo?.name);
+    log('Label column dataType:', labelColumnInfo?.dataType);
 
-    const labelColumn = dataColumns[0];
-    const valueColumn = dataColumns[1];
+    // dataType 7 = DATE in ThoughtSpot
+    const isLabelDate = labelColumnInfo?.dataType === 7;
+    log('Is label column a date?', isLabelDate);
 
-    const labels = labelColumn.dataValue.map((val: any) => String(val));
-    const values = valueColumn.dataValue.map((val: any) => Number(val));
+    // Find value column info
+    const valueColumnId = rawData.columns[1];
+    const valueColumnInfo = chartModel.columns.find(col => col.id === valueColumnId);
+    log('Value column name:', valueColumnInfo?.name);
+    log('Value column dataType:', valueColumnInfo?.dataType);
 
-    log('Labels:', labels.slice(0, 3));
-    log('Values:', values.slice(0, 3));
+    // Build labels — if date column, convert unix timestamp to readable date
+    const labels = rawData.dataValue.map((row: any[]) => {
+        if (isLabelDate) {
+            const date = new Date(Number(row[0]) * 1000);
+            return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+        }
+        return String(row[0]);
+    });
 
-    const matchedColumn = chartModel.columns.find(
-        (col) => col.id === valueColumn.columnId
-    );
-    const datasetLabel = matchedColumn?.name ?? 'Value';
+    // Build values — always numeric for bar chart
+    const values = rawData.dataValue.map((row: any[]) => Number(row[1]));
+
+    log('Labels sample:', labels.slice(0, 3));
+    log('Values sample:', values.slice(0, 3));
+
+    const datasetLabel = valueColumnInfo?.name ?? 'Value';
     log('Dataset label:', datasetLabel);
 
     chartInstance = new Chart(canvas, {
@@ -138,7 +155,9 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
             const queries = chartConfig.map((config: ChartConfig) => ({
                 queryColumns: config.dimensions.flatMap((dim) => dim.columns),
             }));
-            log('Queries built:', JSON.stringify(queries));
+            log('Queries built successfully, column count:',
+                queries[0]?.queryColumns?.length
+            );
             return queries;
         },
 
@@ -151,7 +170,6 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
 
     log('getChartContext resolved — ctx ready');
 
-    // Check and render if data already available
     const checkAndRender = async (): Promise<boolean> => {
         log('checkAndRender() called');
         const chartModel = ctx.getChartModel();
