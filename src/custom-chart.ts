@@ -14,17 +14,21 @@ import type {
 
 let chartInstance: Chart | null = null;
 
+const log = (...msg: any[]) => console.log('[BAR-CHART]', ...msg);
+
 function render(ctx: CustomChartContext): void {
+    log('render() called');
     const chartModel = ctx.getChartModel();
     const canvas = document.getElementById('chart') as HTMLCanvasElement;
 
     if (chartInstance) {
+        log('Destroying existing chart instance');
         chartInstance.destroy();
         chartInstance = null;
     }
 
     if (!chartModel.data || !chartModel.data[0] || !chartModel.data[0].data) {
-        console.warn('No data received yet');
+        log('WARNING: No data in chartModel');
         return;
     }
 
@@ -34,9 +38,13 @@ function render(ctx: CustomChartContext): void {
     }>;
 
     if (!dataColumns || dataColumns.length === 0) {
-        console.warn('Empty data received');
+        log('WARNING: dataColumns is empty');
         return;
     }
+
+    log('dataColumns count:', dataColumns.length);
+    log('First column sample:', dataColumns[0]?.dataValue?.slice(0, 3));
+    log('Second column sample:', dataColumns[1]?.dataValue?.slice(0, 3));
 
     const labelColumn = dataColumns[0];
     const valueColumn = dataColumns[1];
@@ -44,10 +52,14 @@ function render(ctx: CustomChartContext): void {
     const labels = labelColumn.dataValue.map((val: any) => String(val));
     const values = valueColumn.dataValue.map((val: any) => Number(val));
 
+    log('Labels:', labels.slice(0, 3));
+    log('Values:', values.slice(0, 3));
+
     const matchedColumn = chartModel.columns.find(
         (col) => col.id === valueColumn.columnId
     );
     const datasetLabel = matchedColumn?.name ?? 'Value';
+    log('Dataset label:', datasetLabel);
 
     chartInstance = new Chart(canvas, {
         type: 'bar',
@@ -68,67 +80,63 @@ function render(ctx: CustomChartContext): void {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    display: true,
-                },
+                legend: { display: true },
             },
             scales: {
-                x: {
-                    beginAtZero: true,
-                },
+                x: { beginAtZero: true },
             },
         },
     });
+
+    log('Chart rendered successfully');
 }
 
-// RenderStart, RenderError, RenderComplete all inside renderChart
-const renderChart = async (ctx: CustomChartContext): Promise<void> => {
-    try {
-        ctx.emitEvent(ChartToTSEvent.RenderStart);
-        render(ctx);
-    } catch (e) {
-        ctx.emitEvent(ChartToTSEvent.RenderError, {
-            hasError: true,
-            error: e,
-        });
-    } finally {
-        ctx.emitEvent(ChartToTSEvent.RenderComplete);
-    }
-};
+async function renderChart(ctx: CustomChartContext): Promise<void> {
+    log('renderChart() called by ThoughtSpot');
+    ctx.emitEvent(ChartToTSEvent.RenderStart);
+    log('RenderStart emitted');
+    render(ctx);
+    ctx.emitEvent(ChartToTSEvent.RenderComplete);
+    log('RenderComplete emitted');
+}
 
 (async () => {
-    await getChartContext({
+    log('Initializing getChartContext...');
+
+    const ctx = await getChartContext({
         getDefaultChartConfig: (chartModel: ChartModel): ChartConfig[] => {
+            log('getDefaultChartConfig called');
             const cols = chartModel.columns;
+            log('Total columns received:', cols.length);
+
             const dimensionColumns = cols.filter(
                 (col: ChartColumn) => col.type === ColumnType.ATTRIBUTE
             );
             const measureColumns = cols.filter(
                 (col: ChartColumn) => col.type === ColumnType.MEASURE
             );
+
+            log('Dimension columns:', dimensionColumns.map(c => c.name));
+            log('Measure columns:', measureColumns.map(c => c.name));
+
             return [
                 {
                     key: 'default',
                     dimensions: [
-                        {
-                            key: 'x',
-                            columns: dimensionColumns.slice(0, 1),
-                        },
-                        {
-                            key: 'y',
-                            columns: measureColumns.slice(0, 1),
-                        },
+                        { key: 'x', columns: dimensionColumns.slice(0, 1) },
+                        { key: 'y', columns: measureColumns.slice(0, 1) },
                     ],
                 },
             ];
         },
 
         getQueriesFromChartConfig: (chartConfig: ChartConfig[]): Query[] => {
-            return chartConfig.map((config: ChartConfig) => ({
-                queryColumns: config.dimensions.flatMap(
-                    (dim) => dim.columns
-                ),
+            log('getQueriesFromChartConfig called');
+            const queries = chartConfig.map((config: ChartConfig) => ({
+                queryColumns: config.dimensions.flatMap((dim) => dim.columns),
             }));
+            log('Queries built:', JSON.stringify(queries));
+            return queries;
         },
 
         visualPropEditorDefinition: {
@@ -137,4 +145,46 @@ const renderChart = async (ctx: CustomChartContext): Promise<void> => {
 
         renderChart,
     });
+
+    log('getChartContext resolved — ctx ready');
+
+    // Check and render if data already available
+    const checkAndRender = async (): Promise<boolean> => {
+        log('checkAndRender() called');
+        const chartModel = ctx.getChartModel();
+        const hasData = chartModel?.data?.[0]?.data;
+        log('hasData:', !!hasData);
+
+        if (hasData) {
+            log('Data available — calling renderChart');
+            await renderChart(ctx);
+            return true;
+        }
+
+        log('No data yet — will retry');
+        return false;
+    };
+
+    const rendered = await checkAndRender();
+
+    if (!rendered) {
+        log('First attempt had no data — starting poll');
+        let attempts = 0;
+        const maxAttempts = 15;
+
+        const pollInterval = setInterval(async () => {
+            attempts++;
+            log(`Poll attempt ${attempts}/${maxAttempts}`);
+            const success = await checkAndRender();
+            if (success) {
+                log('Poll succeeded — stopping');
+                clearInterval(pollInterval);
+            } else if (attempts >= maxAttempts) {
+                log('Max poll attempts reached — giving up');
+                clearInterval(pollInterval);
+            }
+        }, 2000);
+    } else {
+        log('Rendered on first attempt');
+    }
 })();
