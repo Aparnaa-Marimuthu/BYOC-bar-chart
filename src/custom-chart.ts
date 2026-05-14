@@ -1,38 +1,135 @@
 import Chart from 'chart.js/auto';
+import {
+    ChartToTSEvent,
+    ColumnType,
+    CustomChartContext,
+    getChartContext,
+} from '@thoughtspot/ts-chart-sdk';
+import type {
+    ChartColumn,
+    ChartConfig,
+    ChartModel,
+    Query,
+} from '@thoughtspot/ts-chart-sdk';
 
-// Dummy data to test the chart renders correctly
-const labels = ['Product A', 'Product B', 'Product C', 'Product D', 'Product E'];
-const values = [120, 85, 200, 150, 95];
+let chartInstance: Chart | null = null;
 
-const canvas = document.getElementById('chart') as HTMLCanvasElement;
+function renderChart(chartModel: ChartModel): void {
+    console.log('chartModel:', JSON.stringify(chartModel, null, 2));
+    const canvas = document.getElementById('chart') as HTMLCanvasElement;
 
-new Chart(canvas, {
-    type: 'bar',
-    data: {
-        labels: labels,
-        datasets: [
-            {
-                label: 'Sales',
-                data: values,
-                backgroundColor: 'rgba(54, 162, 235, 0.7)',
-                borderColor: 'rgba(54, 162, 235, 1)',
-                borderWidth: 1,
+    if (chartInstance) {
+        chartInstance.destroy();
+        chartInstance = null;
+    }
+
+    // Guard: if no data yet, don't try to render
+    if (!chartModel.data || !chartModel.data[0] || !chartModel.data[0].data) {
+        console.warn('No data received yet');
+        return;
+    }
+
+    const dataColumns = chartModel.data[0].data as unknown as Array<{
+        columnId: string;
+        dataValue: any[];
+    }>;
+
+    // Guard: if no columns, don't render
+    if (!dataColumns || dataColumns.length === 0) {
+        console.warn('Empty data received');
+        return;
+    }
+
+    // First column = labels (categories), Second column = values (numbers)
+    const labelColumn = dataColumns[0];
+    const valueColumn = dataColumns[1];
+
+    const labels = labelColumn.dataValue.map((val: any) => String(val));
+    const values = valueColumn.dataValue.map((val: any) => Number(val));
+
+    // Find the column name from chartModel.columns using columnId
+    const matchedColumn = chartModel.columns.find(
+        (col) => col.id === valueColumn.columnId
+    );
+    const datasetLabel = matchedColumn?.name ?? 'Value';
+
+    chartInstance = new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: datasetLabel,
+                    data: values,
+                    backgroundColor: 'rgba(54, 162, 235, 0.7)',
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1,
+                },
+            ],
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                },
             },
-        ],
-    },
-    options: {
-        indexAxis: 'y', // 👈 This is what makes it HORIZONTAL
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-            legend: {
-                display: true,
+            scales: {
+                x: {
+                    beginAtZero: true,
+                },
             },
         },
-        scales: {
-            x: {
-                beginAtZero: true,
-            },
+    });
+}
+
+const init = async () => {
+    const ctx: CustomChartContext = await getChartContext({
+
+        getDefaultChartConfig: (chartModel: ChartModel): ChartConfig[] => {
+            const cols = chartModel.columns;
+
+            const dimensionColumns = cols.filter(
+                (col: ChartColumn) => col.type === ColumnType.ATTRIBUTE
+            );
+            const measureColumns = cols.filter(
+                (col: ChartColumn) => col.type === ColumnType.MEASURE
+            );
+
+            return [
+                {
+                    key: 'default',
+                    dimensions: [
+                        {
+                            key: 'x',
+                            columns: dimensionColumns.slice(0, 1),
+                        },
+                        {
+                            key: 'y',
+                            columns: measureColumns.slice(0, 1),
+                        },
+                    ],
+                },
+            ];
         },
-    },
-});
+
+        getQueriesFromChartConfig: (chartConfig: ChartConfig[]): Query[] => {
+            return chartConfig.map((config: ChartConfig) => ({
+                queryColumns: config.dimensions.flatMap(
+                    (dim) => dim.columns
+                ),
+            }));
+        },
+
+        // Fixed: now returns Promise<void>
+        renderChart: async (ctx: CustomChartContext): Promise<void> => {
+            renderChart(ctx.getChartModel());
+        },
+    });
+
+    ctx.emitEvent(ChartToTSEvent.RenderStart);
+};
+
+init();
