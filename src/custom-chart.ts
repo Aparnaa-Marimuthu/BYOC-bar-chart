@@ -37,6 +37,9 @@ function render(ctx: CustomChartContext): void {
         dataValue: any[];
     }>;
 
+    log('Raw data[0].data:', JSON.stringify(chartModel.data[0].data, null, 2));
+    log('dataColumns count:', dataColumns.length);
+
     if (!dataColumns || dataColumns.length === 0) {
         log('WARNING: dataColumns is empty');
         return;
