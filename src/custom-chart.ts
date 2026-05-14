@@ -12,12 +12,14 @@ import type {
     Query,
 } from '@thoughtspot/ts-chart-sdk';
 
-// The currently drawn chart — stored so we can destroy it before redrawing
+// Currently drawn chart, raw data and chart model stored globally
+// so right-click handler can access them without re-fetching
 let chartInstance: Chart | null = null;
-
-// Stores the raw data globally so right-click handler can identify which bar was clicked
 let globalRawData: { columns: string[]; dataValue: any[][] } | null = null;
 let globalChartModel: ChartModel | null = null;
+
+// Prevents attaching duplicate event listeners on re-renders
+let rightClickAttached = false;
 
 function render(ctx: CustomChartContext): void {
     const chartModel = ctx.getChartModel();
@@ -29,7 +31,7 @@ function render(ctx: CustomChartContext): void {
         chartInstance = null;
     }
 
-    // Safety check — if no data arrived yet, stop here
+    // Safety check — stop if no data arrived yet
     if (!chartModel.data || !chartModel.data[0] || !chartModel.data[0].data) {
         return;
     }
@@ -40,25 +42,25 @@ function render(ctx: CustomChartContext): void {
         dataValue: any[][];
     };
 
-    // Safety check — if rows are empty, stop here
+    // Safety check — stop if rows are empty
     if (!rawData.dataValue || rawData.dataValue.length === 0) {
         return;
     }
 
-    // Store globally for right-click handler
     globalRawData = rawData;
     globalChartModel = chartModel;
 
-    // Find label column info — check if it's a date type (dataType 7 = DATE in ThoughtSpot)
+    // Check if label column is a date (dataType 7 = DATE in ThoughtSpot)
+    // so we can convert unix timestamp to readable format like "May 2025"
     const labelColumnId = rawData.columns[0];
     const labelColumnInfo = chartModel.columns.find(col => col.id === labelColumnId);
     const isLabelDate = labelColumnInfo?.dataType === 7;
 
-    // Find value column info — used for the dataset label in the legend
+    // Find value column name to show in the chart legend
     const valueColumnId = rawData.columns[1];
     const valueColumnInfo = chartModel.columns.find(col => col.id === valueColumnId);
 
-    // Build Y axis labels — convert unix timestamp to readable date if it's a date column
+    // Build Y axis labels — format as readable date if date column, otherwise use as-is
     const labels = rawData.dataValue.map((row: any[]) => {
         if (isLabelDate) {
             const date = new Date(Number(row[0]) * 1000);
@@ -69,8 +71,6 @@ function render(ctx: CustomChartContext): void {
 
     // Build X axis values — always numeric for a bar chart
     const values = rawData.dataValue.map((row: any[]) => Number(row[1]));
-
-    // The name shown in the chart legend
     const datasetLabel = valueColumnInfo?.name ?? 'Value';
 
     // Draw the horizontal bar chart with left-to-right grow animation
@@ -89,7 +89,7 @@ function render(ctx: CustomChartContext): void {
             ],
         },
         options: {
-            indexAxis: 'y', // Makes the bar chart horizontal
+            indexAxis: 'y', // Makes bars horizontal
             responsive: true,
             maintainAspectRatio: false,
             // Bars grow from left to right every time chart renders
@@ -103,81 +103,60 @@ function render(ctx: CustomChartContext): void {
             scales: {
                 x: { beginAtZero: true },
             },
-            // Capture right-click on bars to open ThoughtSpot's native context menu
+            // Show pointer cursor when hovering over a bar
             onHover: (event, elements) => {
-                const canvas = event.native?.target as HTMLCanvasElement;
-                if (canvas) {
-                    canvas.style.cursor = elements.length > 0 ? 'pointer' : 'default';
+                const nativeCanvas = event.native?.target as HTMLCanvasElement;
+                if (nativeCanvas) {
+                    nativeCanvas.style.cursor = elements.length > 0 ? 'pointer' : 'default';
                 }
             },
         },
     });
 
-    // Attach right-click handler to canvas after chart is drawn
+    // Attach right-click handler after chart is drawn
     attachRightClickHandler(canvas, ctx);
 }
 
 function attachRightClickHandler(canvas: HTMLCanvasElement, ctx: CustomChartContext): void {
-    // Remove any existing right-click listener to avoid duplicates
-    const newCanvas = canvas.cloneNode(true) as HTMLCanvasElement;
-    canvas.parentNode?.replaceChild(newCanvas, canvas);
+    // Only attach once — skip if already attached to prevent duplicate listeners
+    if (rightClickAttached) return;
+    rightClickAttached = true;
 
-    // Re-get the canvas after replacement
-    const freshCanvas = document.getElementById('chart') as HTMLCanvasElement;
-
-    freshCanvas.addEventListener('contextmenu', (event: MouseEvent) => {
-        // Stop browser's default right-click menu from appearing
+    // Right-click — find the clicked bar and open ThoughtSpot's native context menu
+    canvas.addEventListener('contextmenu', (event: MouseEvent) => {
         event.preventDefault();
-
         if (!globalRawData || !globalChartModel || !chartInstance) return;
 
-        // Find which bar was right-clicked using Chart.js's getElementsAtEventForMode
         const points = chartInstance.getElementsAtEventForMode(
-            event,
-            'nearest',
-            { intersect: true },
-            false
+            event, 'nearest', { intersect: true }, false
         );
-
         if (points.length === 0) return;
 
-        // Get the index of the clicked bar
-        const clickedIndex = points[0].index;
-        const clickedRow = globalRawData.dataValue[clickedIndex];
-
+        const clickedRow = globalRawData.dataValue[points[0].index];
         if (!clickedRow) return;
 
-        // Get the label column ID — this is what ThoughtSpot uses to filter
-        const labelColumnId = globalRawData.columns[0];
-
-        // Build the clicked point — tells ThoughtSpot which data point was clicked
-        const clickedPoint = {
-            tuple: [
-                {
-                    columnId: labelColumnId,
-                    value: clickedRow[0], // the actual value of the clicked bar label
-                },
-            ],
-        };
-
-        // Open ThoughtSpot's native context menu at the cursor position
+        // Tell ThoughtSpot which bar was clicked so it shows the correct filter options
         ctx.emitEvent(ChartToTSEvent.OpenContextMenu, {
-            event: {
-                clientX: event.clientX,
-                clientY: event.clientY,
+            event: { clientX: event.clientX, clientY: event.clientY },
+            clickedPoint: {
+                tuple: [
+                    {
+                        columnId: globalRawData.columns[0],
+                        value: clickedRow[0],
+                    },
+                ],
             },
-            clickedPoint,
         });
     });
 
-    // Left click anywhere closes the context menu
-    freshCanvas.addEventListener('click', () => {
+    // Left-click anywhere on chart — close the context menu
+    canvas.addEventListener('click', () => {
         ctx.emitEvent(ChartToTSEvent.CloseContextMenu);
     });
 }
 
-// ThoughtSpot calls this function when it wants the chart to draw
-// Must emit RenderStart → draw → RenderComplete — otherwise ThoughtSpot times out
+// ThoughtSpot calls this when it wants the chart drawn
+// RenderStart → draw → RenderComplete is mandatory — missing RenderComplete causes timeout
 async function renderChart(ctx: CustomChartContext): Promise<void> {
     ctx.emitEvent(ChartToTSEvent.RenderStart);
     render(ctx);
@@ -187,39 +166,35 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
 (async () => {
     const ctx = await getChartContext({
 
-        // Tells ThoughtSpot what column slots your chart needs by default
+        // Tells ThoughtSpot what column slots the chart needs —
+        // first attribute column for labels, first measure column for values
         getDefaultChartConfig: (chartModel: ChartModel): ChartConfig[] => {
             const cols = chartModel.columns;
-
-            // Separate columns into text/date (attributes) and numbers (measures)
             const dimensionColumns = cols.filter(
                 (col: ChartColumn) => col.type === ColumnType.ATTRIBUTE
             );
             const measureColumns = cols.filter(
                 (col: ChartColumn) => col.type === ColumnType.MEASURE
             );
-
             return [
                 {
                     key: 'default',
                     dimensions: [
-                        // First attribute column goes to X slot (labels)
                         { key: 'x', columns: dimensionColumns.slice(0, 1) },
-                        // First measure column goes to Y slot (values)
                         { key: 'y', columns: measureColumns.slice(0, 1) },
                     ],
                 },
             ];
         },
 
-        // Tells ThoughtSpot which columns to actually fetch data for
+        // Tells ThoughtSpot which columns to fetch data for
         getQueriesFromChartConfig: (chartConfig: ChartConfig[]): Query[] => {
             return chartConfig.map((config: ChartConfig) => ({
                 queryColumns: config.dimensions.flatMap((dim) => dim.columns),
             }));
         },
 
-        // Defines the drag-and-drop panel shown in ThoughtSpot's right side panel
+        // Builds the drag-and-drop panel in ThoughtSpot's right side panel
         chartConfigEditorDefinition: [
             {
                 key: 'default',
@@ -246,7 +221,7 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
             },
         ],
 
-        // Tells ThoughtSpot this chart has no custom styling panel — prevents a crash
+        // No custom styling panel needed — empty elements prevents a crash
         visualPropEditorDefinition: {
             elements: [],
         },
