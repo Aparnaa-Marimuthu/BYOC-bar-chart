@@ -11,5 +11,9 @@
   "devDependencies": {
     "typescript": "~6.0.2",
     "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "@thoughtspot/ts-chart-sdk": "^1.2.1",
+    "chart.js": "^4.5.1"
   }
 }
