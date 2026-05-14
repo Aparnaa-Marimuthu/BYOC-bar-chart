@@ -92,11 +92,21 @@ function render(ctx: CustomChartContext): void {
             indexAxis: 'y', // Makes bars horizontal
             responsive: true,
             maintainAspectRatio: false,
-            // Bars grow from left to right every time chart renders
             animation: {
-                duration: 800,
-                easing: 'easeInOutQuart',
-            },
+                    duration: 800,
+                    easing: 'easeInOutQuart',
+                },
+                animations: {
+                    x: {
+                        type: 'number' as const,
+                        easing: 'easeInOutQuart',
+                        duration: 800,
+                        from: 0,
+                    },
+                    y: {
+                        duration: 0,
+                    },
+                },
             plugins: {
                 legend: { display: true },
             },
