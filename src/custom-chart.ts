@@ -1,267 +1,453 @@
-import Chart from 'chart.js/auto';
-import {
-    ChartToTSEvent,
-    ColumnType,
-    CustomChartContext,
-    getChartContext,
-} from '@thoughtspot/ts-chart-sdk';
+import { ChartToTSEvent, getChartContext } from '@thoughtspot/ts-chart-sdk';
 import type {
-    ChartColumn,
     ChartConfig,
     ChartModel,
+    CustomChartContext,
     Query,
 } from '@thoughtspot/ts-chart-sdk';
+import './style.css';
+import { byocRuntimeConfig } from './config';
+import {
+    createBarChart,
+    getChartUpdateMode,
+    updateExistingChart,
+} from './chartRenderer';
+import type { NativeBarChart } from './chartRenderer';
+import {
+    createNativeDataMemo,
+    transformNativeData,
+} from './nativeData';
+import {
+    debugLog,
+    debugWarn,
+    installDebugHelper,
+    logSafeError,
+    setLastRenderSummary,
+    toSafeErrorDetails,
+} from './debug';
+import type {
+    ByocErrorPhase,
+    LastRenderSummary,
+} from './debug';
+import {
+    elapsedMs,
+    nextRenderId,
+    nowMs,
+    TRUNCATION_WARNING_MESSAGE,
+} from './performance';
+import { setChartUiState } from './uiState';
+import {
+    chartConfigEditorDefinition,
+    getDefaultBarChartConfig,
+    getQueriesFromBarChartConfig,
+    visualPropEditorDefinition,
+} from './thoughtspotConfig';
+import { attachRightClickHandler } from './thoughtspotInteractions';
+import type {
+    ThoughtSpotEventEmitter,
+    ThoughtSpotInteractionState,
+} from './thoughtspotInteractions';
 
-// Currently drawn chart, raw data and chart model stored globally
-// so right-click handler can access them without re-fetching
-let chartInstance: Chart | null = null;
-let globalRawData: { columns: string[]; dataValue: any[][] } | null = null;
-let globalChartModel: ChartModel | null = null;
+let chartInstance: NativeBarChart | null = null;
+let initialRenderGuardUsed = false;
+let lastInteractionRenderId: string | undefined;
 
-// Prevents attaching duplicate event listeners on re-renders
-let rightClickAttached = false;
+const nativeDataMemo = createNativeDataMemo();
+const interactionState: ThoughtSpotInteractionState = {
+    chart: null,
+    rawData: null,
+    ctx: null,
+};
 
-function render(ctx: CustomChartContext): void {
+installDebugHelper(byocRuntimeConfig);
+
+class ByocPhaseError extends Error {
+    phase: ByocErrorPhase;
+    rowCount?: number;
+    originalError: unknown;
+
+    constructor(error: unknown, phase: ByocErrorPhase, rowCount?: number) {
+        super(error instanceof Error ? error.message : String(error));
+        this.name = error instanceof Error ? error.name : 'Error';
+        this.phase = phase;
+        this.rowCount = rowCount;
+        this.originalError = error;
+    }
+}
+
+interface RenderOutcome {
+    emitRenderError: boolean;
+    errorMessage?: string;
+    summary: LastRenderSummary;
+}
+
+function render(ctx: CustomChartContext, renderId: string): RenderOutcome {
+    const renderStartMs = nowMs();
+    const canvas = document.getElementById('chart') as HTMLCanvasElement | null;
     const chartModel = ctx.getChartModel();
-    const canvas = document.getElementById('chart') as HTMLCanvasElement;
+    const rowsBeforeTransform = getDetectedRowCount(chartModel);
 
-    // Wipe the existing chart before drawing a new one
-    if (chartInstance) {
-        chartInstance.destroy();
-        chartInstance = null;
-    }
-
-    // Safety check — stop if no data arrived yet
-    if (!chartModel.data || !chartModel.data[0] || !chartModel.data[0].data) {
-        return;
-    }
-
-    // ThoughtSpot sends data as rows: { columns: [ids], dataValue: [[row1], [row2]...] }
-    const rawData = chartModel.data[0].data as unknown as {
-        columns: string[];
-        dataValue: any[][];
-    };
-
-    // Safety check — stop if rows are empty
-    if (!rawData.dataValue || rawData.dataValue.length === 0) {
-        return;
-    }
-
-    globalRawData = rawData;
-    globalChartModel = chartModel;
-
-    // Check if label column is a date (dataType 7 = DATE in ThoughtSpot)
-    // so we can convert unix timestamp to readable format like "May 2025"
-    const labelColumnId = rawData.columns[0];
-    const labelColumnInfo = chartModel.columns.find(col => col.id === labelColumnId);
-    const isLabelDate = labelColumnInfo?.dataType === 7;
-
-    // Find value column name to show in the chart legend
-    const valueColumnId = rawData.columns[1];
-    const valueColumnInfo = chartModel.columns.find(col => col.id === valueColumnId);
-
-    // Build Y axis labels — format as readable date if date column, otherwise use as-is
-    const labels = rawData.dataValue.map((row: any[]) => {
-        if (isLabelDate) {
-            const date = new Date(Number(row[0]) * 1000);
-            return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-        }
-        return String(row[0]);
-    });
-
-    // Build X axis values — always numeric for a bar chart
-    const values = rawData.dataValue.map((row: any[]) => Number(row[1]));
-    const datasetLabel = valueColumnInfo?.name ?? 'Value';
-
-    // Draw the horizontal bar chart with left-to-right grow animation
-    chartInstance = new Chart(canvas, {
-        type: 'bar',
-        data: {
-            labels,
-            datasets: [
-                {
-                    label: datasetLabel,
-                    data: values,
-                    backgroundColor: 'rgba(54, 162, 235, 0.7)',
-                    borderColor: 'rgba(54, 162, 235, 1)',
-                    borderWidth: 1,
-                },
-            ],
-        },
-        options: {
-            indexAxis: 'y', // Makes bars horizontal
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: {
-                    duration: 800,
-                    easing: 'easeInOutQuart',
-                },
-                animations: {
-                    x: {
-                        type: 'number' as const,
-                        easing: 'easeInOutQuart',
-                        duration: 800,
-                        from: 0,
-                    },
-                    y: {
-                        duration: 0,
-                    },
-                },
-            plugins: {
-                legend: { display: true },
-            },
-            scales: {
-                x: { beginAtZero: true },
-            },
-            // Show pointer cursor when hovering over a bar
-            onHover: (event, elements) => {
-                const nativeCanvas = event.native?.target as HTMLCanvasElement;
-                if (nativeCanvas) {
-                    nativeCanvas.style.cursor = elements.length > 0 ? 'pointer' : 'default';
-                }
-            },
-        },
-    });
-
-    // Attach right-click handler after chart is drawn
-    attachRightClickHandler(canvas, ctx);
-}
-
-function attachRightClickHandler(canvas: HTMLCanvasElement, ctx: CustomChartContext): void {
-    // Only attach once — skip if already attached to prevent duplicate listeners
-    if (rightClickAttached) return;
-    rightClickAttached = true;
-
-    // Right-click — find the clicked bar and open ThoughtSpot's native context menu
-    canvas.addEventListener('contextmenu', (event: MouseEvent) => {
-        event.preventDefault();
-        if (!globalRawData || !globalChartModel || !chartInstance) return;
-
-        const points = chartInstance.getElementsAtEventForMode(
-            event, 'nearest', { intersect: true }, false
-        );
-        if (points.length === 0) return;
-
-        const clickedRow = globalRawData.dataValue[points[0].index];
-        if (!clickedRow) return;
-
-        // Tell ThoughtSpot which bar was clicked so it shows the correct filter options
-        ctx.emitEvent(ChartToTSEvent.OpenContextMenu, {
-            event: { clientX: event.clientX, clientY: event.clientY },
-            clickedPoint: {
-                tuple: [
-                    {
-                        columnId: globalRawData.columns[0],
-                        value: clickedRow[0],
-                    },
-                ],
-            },
+    if (byocRuntimeConfig.debug && byocRuntimeConfig.debugData) {
+        debugLog(byocRuntimeConfig.debug, '[BYOC:render:data]', {
+            renderId,
+            debugDataEnabled: true,
+            chartModelData: chartModel.data,
         });
+    }
+
+    if (!canvas) {
+        setChartUiState('missing-canvas');
+        const summary = buildRenderSummary({
+            renderId,
+            rowsInput: rowsBeforeTransform,
+            rowsRendered: 0,
+            truncated: false,
+            memoCacheHit: false,
+            chartAction: chartInstance ? 'update' : 'create',
+            updateMode: 'default',
+            nativeDataTransformMs: 0,
+            chartUpdateMs: 0,
+            renderTotalMs: elapsedMs(renderStartMs),
+        });
+        setLastRenderSummary(summary);
+        debugLog(byocRuntimeConfig.debug, '[BYOC:perf]', summary);
+        logSafeError(
+            byocRuntimeConfig.debug,
+            toSafeErrorDetails(
+                new Error('Chart canvas was not found.'),
+                'chart-update',
+                renderId,
+                rowsBeforeTransform,
+            ),
+        );
+        return {
+            emitRenderError: true,
+            errorMessage: 'Chart canvas was not found.',
+            summary,
+        };
+    }
+
+    const transformStartMs = nowMs();
+    let transformResult: ReturnType<typeof transformNativeData>;
+    try {
+        transformResult = transformNativeData(
+            chartModel,
+            byocRuntimeConfig.maxBars,
+            nativeDataMemo,
+        );
+    } catch (error: unknown) {
+        throw new ByocPhaseError(error, 'transform', rowsBeforeTransform);
+    }
+    const nativeDataTransformMs = elapsedMs(transformStartMs);
+
+    if (transformResult.status !== 'ready') {
+        interactionState.rawData = null;
+        interactionState.ctx = ctx as unknown as ThoughtSpotEventEmitter;
+        setChartUiState(transformResult.status, transformResult.message);
+        debugLog(byocRuntimeConfig.debug, '[BYOC:render:data]', {
+            renderId,
+            state: transformResult.status,
+            message: transformResult.message,
+            rowsInput: rowsBeforeTransform,
+            rowsRendered: 0,
+            truncated: false,
+            memoCacheHit: false,
+        });
+
+        const summary = buildRenderSummary({
+            renderId,
+            rowsInput: rowsBeforeTransform,
+            rowsRendered: 0,
+            truncated: false,
+            memoCacheHit: false,
+            chartAction: chartInstance ? 'update' : 'create',
+            updateMode: 'default',
+            nativeDataTransformMs,
+            chartUpdateMs: 0,
+            renderTotalMs: elapsedMs(renderStartMs),
+        });
+        setLastRenderSummary(summary);
+        debugLog(byocRuntimeConfig.debug, '[BYOC:perf]', summary);
+        return { emitRenderError: false, summary };
+    }
+
+    const chartData = transformResult.data;
+    const labelColumnName = getColumnName(chartModel, chartData.rawData.columns[0]);
+    const valueColumnName = getColumnName(chartModel, chartData.rawData.columns[1]);
+
+    debugLog(byocRuntimeConfig.debug, '[BYOC:render:data]', {
+        renderId,
+        rowsInput: chartData.sourceRowCount,
+        rowsRendered: chartData.rowsRendered,
+        truncated: chartData.truncated,
+        memoCacheHit: transformResult.fromMemo,
+        labelColumnName,
+        valueColumnName,
     });
 
-    // Left-click anywhere on chart — close the context menu
-    canvas.addEventListener('click', () => {
-        ctx.emitEvent(ChartToTSEvent.CloseContextMenu);
+    if (chartData.truncated) {
+        debugWarn(byocRuntimeConfig.debug, '[BYOC:render:data]', {
+            message: TRUNCATION_WARNING_MESSAGE,
+            rowsInput: chartData.sourceRowCount,
+            rowsRendered: chartData.rowsRendered,
+            maxBars: byocRuntimeConfig.maxBars,
+        });
+    }
+
+    setChartUiState('ready');
+    interactionState.rawData = chartData.rawData;
+    interactionState.ctx = ctx as unknown as ThoughtSpotEventEmitter;
+
+    const chartAction: 'create' | 'update' = chartInstance ? 'update' : 'create';
+    const updateModeValue = getChartUpdateMode(
+        chartData,
+        byocRuntimeConfig.animationFreeRowThreshold,
+    );
+    const updateMode = updateModeValue === 'none' ? 'none' : 'default';
+    const chartUpdateStartMs = nowMs();
+
+    try {
+        if (chartInstance) {
+            updateExistingChart(
+                chartInstance,
+                chartData,
+                byocRuntimeConfig.animationFreeRowThreshold,
+            );
+        } else {
+            chartInstance = createBarChart(
+                canvas,
+                chartData,
+                byocRuntimeConfig.animationFreeRowThreshold,
+            );
+        }
+    } catch (error: unknown) {
+        throw new ByocPhaseError(error, 'chart-update', chartData.sourceRowCount);
+    }
+
+    interactionState.chart = chartInstance;
+    const chartUpdateMs = elapsedMs(chartUpdateStartMs);
+    debugLog(byocRuntimeConfig.debug, '[BYOC:render:chart]', {
+        renderId,
+        chartAction,
+        updateMode,
+        chartInstanceDestroyUsed: false,
     });
+
+    const rightClickAttached = attachRightClickHandler(canvas, interactionState, {
+        enableCustomDrill: byocRuntimeConfig.enableCustomDrill,
+        onError: (error, rowCount) => {
+            logSafeError(
+                byocRuntimeConfig.debug,
+                toSafeErrorDetails(
+                    error,
+                    'context-menu',
+                    lastInteractionRenderId,
+                    rowCount,
+                ),
+            );
+        },
+    });
+    lastInteractionRenderId = renderId;
+    debugLog(byocRuntimeConfig.debug, '[BYOC:context-menu]', {
+        renderId,
+        rightClickHandlerAttached: rightClickAttached,
+        enableCustomDrill: byocRuntimeConfig.enableCustomDrill,
+    });
+
+    const summary = buildRenderSummary({
+        renderId,
+        rowsInput: chartData.sourceRowCount,
+        rowsRendered: chartData.rowsRendered,
+        truncated: chartData.truncated,
+        memoCacheHit: transformResult.fromMemo,
+        chartAction,
+        updateMode,
+        nativeDataTransformMs,
+        chartUpdateMs,
+        renderTotalMs: elapsedMs(renderStartMs),
+    });
+    setLastRenderSummary(summary);
+    debugLog(byocRuntimeConfig.debug, '[BYOC:perf]', summary);
+
+    return { emitRenderError: false, summary };
 }
 
-// ThoughtSpot calls this when it wants the chart drawn
-// RenderStart → draw → RenderComplete is mandatory — missing RenderComplete causes timeout
 async function renderChart(ctx: CustomChartContext): Promise<void> {
-    ctx.emitEvent(ChartToTSEvent.RenderStart);
-    render(ctx);
-    ctx.emitEvent(ChartToTSEvent.RenderComplete);
+    const renderId = nextRenderId();
+    const chartModel = ctx.getChartModel();
+    debugLog(byocRuntimeConfig.debug, '[BYOC:render:start]', {
+        renderId,
+        chartModelExists: Boolean(chartModel),
+        chartModelDataExists: Boolean(chartModel?.data?.[0]?.data),
+        rowsInput: getDetectedRowCount(chartModel),
+    });
+
+    try {
+        await ctx.emitEvent(ChartToTSEvent.RenderStart);
+        const outcome = render(ctx, renderId);
+
+        if (outcome.emitRenderError) {
+            await ctx.emitEvent(ChartToTSEvent.RenderError, {
+                hasError: true,
+                error: outcome.errorMessage ?? 'Unable to render chart.',
+            });
+            return;
+        }
+
+        await ctx.emitEvent(ChartToTSEvent.RenderComplete);
+        debugLog(byocRuntimeConfig.debug, '[BYOC:render:done]', {
+            renderId,
+            rowsRendered: outcome.summary.rowsRendered,
+            truncated: outcome.summary.truncated,
+        });
+    } catch (error: unknown) {
+        const phaseError = error instanceof ByocPhaseError ? error : null;
+        const sourceError = phaseError?.originalError ?? error;
+        const phase = phaseError?.phase ?? 'chart-update';
+        const rowCount = phaseError?.rowCount ?? getDetectedRowCount(chartModel);
+
+        setChartUiState('error');
+        logSafeError(
+            byocRuntimeConfig.debug,
+            toSafeErrorDetails(sourceError, phase, renderId, rowCount),
+        );
+        await emitRenderErrorSafely(ctx, sourceError);
+    }
 }
 
-(async () => {
+async function emitRenderErrorSafely(
+    ctx: CustomChartContext,
+    error: unknown,
+): Promise<void> {
+    try {
+        await ctx.emitEvent(ChartToTSEvent.RenderError, {
+            hasError: true,
+            error: error instanceof Error ? error.message : 'Unable to render chart.',
+        });
+    } catch {
+        // The SDK host may be unavailable outside ThoughtSpot.
+    }
+}
+
+function getDefaultChartConfigWithDebug(chartModel: ChartModel): ChartConfig[] {
+    try {
+        debugLog(byocRuntimeConfig.debug, '[BYOC:config]', {
+            event: 'getDefaultChartConfig',
+            columnsCount: chartModel.columns.length,
+            columnNames: chartModel.columns.map((column) => column.name),
+        });
+        const chartConfig = getDefaultBarChartConfig(chartModel);
+        debugLog(byocRuntimeConfig.debug, '[BYOC:config]', {
+            event: 'selectedChartConfigDimensions',
+            dimensions: summarizeChartConfig(chartConfig),
+        });
+        return chartConfig;
+    } catch (error: unknown) {
+        logSafeError(
+            byocRuntimeConfig.debug,
+            toSafeErrorDetails(error, 'config'),
+        );
+        throw error;
+    }
+}
+
+function getQueriesFromChartConfigWithDebug(chartConfig: ChartConfig[]): Query[] {
+    try {
+        const queries = getQueriesFromBarChartConfig(
+            chartConfig,
+            byocRuntimeConfig.querySize,
+        );
+        debugLog(byocRuntimeConfig.debug, '[BYOC:query]', {
+            chartConfigDimensions: summarizeChartConfig(chartConfig),
+            queryColumnsCount: queries.reduce(
+                (count, query) => count + query.queryColumns.length,
+                0,
+            ),
+            queryParams: queries[0]?.queryParams ?? null,
+        });
+        return queries;
+    } catch (error: unknown) {
+        logSafeError(
+            byocRuntimeConfig.debug,
+            toSafeErrorDetails(error, 'query'),
+        );
+        throw error;
+    }
+}
+
+function hasInitialNativeData(ctx: CustomChartContext): boolean {
+    return Boolean(ctx.getChartModel()?.data?.[0]?.data);
+}
+
+async function bootstrapChart(): Promise<void> {
+    debugLog(byocRuntimeConfig.debug, '[BYOC:init]', {
+        event: 'starting',
+        debug: byocRuntimeConfig.debug,
+        version: `${byocRuntimeConfig.appVersion}@${byocRuntimeConfig.buildTime}`,
+    });
+
     const ctx = await getChartContext({
-
-        // Tells ThoughtSpot what column slots the chart needs —
-        // first attribute column for labels, first measure column for values
-        getDefaultChartConfig: (chartModel: ChartModel): ChartConfig[] => {
-            const cols = chartModel.columns;
-            const dimensionColumns = cols.filter(
-                (col: ChartColumn) => col.type === ColumnType.ATTRIBUTE
-            );
-            const measureColumns = cols.filter(
-                (col: ChartColumn) => col.type === ColumnType.MEASURE
-            );
-            return [
-                {
-                    key: 'default',
-                    dimensions: [
-                        { key: 'x', columns: dimensionColumns.slice(0, 1) },
-                        { key: 'y', columns: measureColumns.slice(0, 1) },
-                    ],
-                },
-            ];
-        },
-
-        // Tells ThoughtSpot which columns to fetch data for
-        getQueriesFromChartConfig: (chartConfig: ChartConfig[]): Query[] => {
-            return chartConfig.map((config: ChartConfig) => ({
-                queryColumns: config.dimensions.flatMap((dim) => dim.columns),
-            }));
-        },
-
-        // Builds the drag-and-drop panel in ThoughtSpot's right side panel
-        chartConfigEditorDefinition: [
-            {
-                key: 'default',
-                label: 'Bar Chart Configuration',
-                descriptionText: 'X Axis accepts text or date columns. Y Axis accepts number columns only.',
-                columnSections: [
-                    {
-                        key: 'x',
-                        label: 'X Axis — Categories / Labels',
-                        allowAttributeColumns: true,
-                        allowMeasureColumns: false,
-                        allowTimeSeriesColumns: true,
-                        maxColumnCount: 1,
-                    },
-                    {
-                        key: 'y',
-                        label: 'Y Axis — Values / Numbers',
-                        allowAttributeColumns: false,
-                        allowMeasureColumns: true,
-                        allowTimeSeriesColumns: false,
-                        maxColumnCount: 1,
-                    },
-                ],
-            },
-        ],
-
-        // No custom styling panel needed — empty elements prevents a crash
-        visualPropEditorDefinition: {
-            elements: [],
-        },
-
+        getDefaultChartConfig: getDefaultChartConfigWithDebug,
+        getQueriesFromChartConfig: getQueriesFromChartConfigWithDebug,
+        chartConfigEditorDefinition,
+        visualPropEditorDefinition,
         renderChart,
     });
 
-    // Check if data is already available and render immediately
-    const checkAndRender = async (): Promise<boolean> => {
-        const chartModel = ctx.getChartModel();
-        const hasData = chartModel?.data?.[0]?.data;
-        if (hasData) {
-            await renderChart(ctx);
-            return true;
-        }
-        return false;
-    };
+    const hasInitialData = hasInitialNativeData(ctx);
+    debugLog(byocRuntimeConfig.debug, '[BYOC:init]', {
+        event: 'complete',
+        hasInitialData,
+        oneShotInitialRenderGuardUsed: false,
+    });
 
-    const rendered = await checkAndRender();
-
-    // If no data yet, retry every 2 seconds up to 15 times
-    if (!rendered) {
-        let attempts = 0;
-        const maxAttempts = 15;
-        const pollInterval = setInterval(async () => {
-            attempts++;
-            const success = await checkAndRender();
-            if (success || attempts >= maxAttempts) {
-                clearInterval(pollInterval);
-            }
-        }, 2000);
+    if (!initialRenderGuardUsed && hasInitialData) {
+        initialRenderGuardUsed = true;
+        debugLog(byocRuntimeConfig.debug, '[BYOC:init]', {
+            event: 'oneShotInitialRenderGuard',
+            used: true,
+        });
+        await renderChart(ctx);
     }
-})();
+}
+
+function buildRenderSummary(
+    summary: Omit<LastRenderSummary, 'path'>,
+): LastRenderSummary {
+    return {
+        path: 'native-thoughtspot',
+        ...summary,
+    };
+}
+
+function getDetectedRowCount(chartModel: ChartModel | null | undefined): number {
+    const rows = chartModel?.data?.[0]?.data?.dataValue;
+    return Array.isArray(rows) ? rows.length : 0;
+}
+
+function getColumnName(chartModel: ChartModel, columnId: string | undefined): string {
+    if (!columnId) return 'unknown';
+    return chartModel.columns.find((column) => column.id === columnId)?.name ?? 'unknown';
+}
+
+function summarizeChartConfig(chartConfig: ChartConfig[]) {
+    return chartConfig.map((config) => ({
+        key: config.key,
+        dimensions: config.dimensions.map((dimension) => ({
+            key: dimension.key,
+            columnCount: dimension.columns.length,
+            columnNames: dimension.columns.map((column) => column.name),
+        })),
+    }));
+}
+
+void bootstrapChart().catch((error: unknown) => {
+    setChartUiState(
+        'error',
+        'ThoughtSpot chart context is not available. Open this chart inside ThoughtSpot to render live data.',
+    );
+    logSafeError(
+        byocRuntimeConfig.debug,
+        toSafeErrorDetails(error, 'init'),
+    );
+});

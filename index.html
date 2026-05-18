@@ -7,8 +7,9 @@
     <title>custom-bar-chart</title>
   </head>
   <body>
-    <div style="width:99vw; height:95vh; position: relative;">
-      <canvas id="chart" style="display:flex;"></canvas>
+    <div id="chart-shell">
+      <canvas id="chart"></canvas>
+      <div id="chart-state" role="status" hidden></div>
     </div>
     <script type="module" src="/src/custom-chart.ts"></script>
   </body>
