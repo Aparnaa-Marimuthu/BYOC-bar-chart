@@ -52,6 +52,7 @@ import {
     backendPathFromResponse,
     buildBackendRequestFromChartContext,
     fetchBackendChartData,
+    getBackendRequestContext,
     normalizeBackendRowsToChartData,
 } from './services/backendDataClient';
 import type { BackendChartDataResponse, BackendDataError } from './services/backendDataClient';
@@ -364,13 +365,18 @@ async function renderBackendChart(
     latestBackendRequestSequence += 1;
     const requestSequence = latestBackendRequestSequence;
 
+    const chartModel = ctx.getChartModel();
+    const requestContext = getBackendRequestContext(chartModel, byocRuntimeConfig);
     const request = buildBackendRequestFromChartContext(ctx, renderId, byocRuntimeConfig);
     debugLog(byocRuntimeConfig.debug, '[BYOC:backend:request]', {
         requestId: request.requestId,
         mode: byocRuntimeConfig.dataMode,
         dimension: request.dimension,
         metric: request.metric,
+        nativeRowsInput: requestContext.nativeRowsInput,
+        effectiveBackendLimit: requestContext.effectiveBackendLimit,
         limit: request.limit,
+        nativeDataSignatureShort: requestContext.nativeDataSignatureShort,
     });
 
     let response: BackendChartDataResponse;
@@ -429,6 +435,9 @@ async function renderBackendChart(
         cacheHit: response.cacheHit,
         source: response.source,
         rowsReturned: response.rows.length,
+        requestedLimit: request.limit,
+        nativeRowsInput: requestContext.nativeRowsInput,
+        effectiveBackendLimit: requestContext.effectiveBackendLimit,
         totalMs: response.timing.totalMs,
         cacheLookupMs: response.timing.cacheLookupMs,
         databricksWaitMs: response.timing.databricksWaitMs,
@@ -436,7 +445,11 @@ async function renderBackendChart(
         arrowParseMs: response.timing.arrowParseMs,
     });
 
-    const chartData = normalizeBackendRowsToChartData(response, request.metric);
+    const chartData = normalizeBackendRowsToChartData(
+        response,
+        request.metric,
+        requestContext.nativeRowsInput > 0 ? requestContext.nativeRowsInput : undefined,
+    );
     if (chartData.rowsRendered === 0) {
         setChartUiState('empty', 'Backend returned no data to display.');
         const summary = buildRenderSummary({

@@ -22,6 +22,31 @@ describe('cache key', () => {
         expect(buildCacheKey(base)).not.toBe(buildCacheKey(changedFilter));
         expect(buildCacheKey(base)).not.toBe(buildCacheKey(changedUser));
     });
+
+    it('changes when native ThoughtSpot result signature changes', () => {
+        const first = createRequest({
+            filters: {
+                extra: {
+                    nativeRowsInput: 5,
+                    nativeDataSignature: 'signature-a',
+                    thoughtSpotResultWindowLimit: 5,
+                },
+            },
+            limit: 5,
+        });
+        const second = createRequest({
+            filters: {
+                extra: {
+                    nativeRowsInput: 5,
+                    nativeDataSignature: 'signature-b',
+                    thoughtSpotResultWindowLimit: 5,
+                },
+            },
+            limit: 5,
+        });
+
+        expect(buildCacheKey(first)).not.toBe(buildCacheKey(second));
+    });
 });
 
 function createRequest(overrides: Partial<ChartDataRequest> = {}): ChartDataRequest {

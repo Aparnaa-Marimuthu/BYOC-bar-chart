@@ -1,7 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
+    buildBackendRequestFromChartContext,
+    buildNativeDataSignature,
     backendPathFromResponse,
     fetchBackendChartData,
+    getBackendRequestContext,
     normalizeBackendRowsToChartData,
 } from './backendDataClient';
 import type { BackendChartDataRequest, BackendChartDataResponse } from './backendDataClient';
@@ -63,10 +66,51 @@ describe('backend data client', () => {
     it('normalizes backend rows for the chart renderer', () => {
         const chartData = normalizeBackendRowsToChartData(createResponse(true, 'cache'), 'revenue');
 
-        expect(chartData.labels).toEqual(['A']);
+        expect(chartData.labels).toEqual(['A-0']);
         expect(chartData.values).toEqual([12.34]);
         expect(chartData.datasetLabel).toBe('revenue');
         expect(chartData.rowsRendered).toBe(1);
+    });
+
+    it('uses native row count as backend limit for filtered ThoughtSpot windows', () => {
+        const config = getByocRuntimeConfig({
+            VITE_BYOC_QUERY_SIZE: '1000',
+            VITE_BYOC_MAX_BARS: '1000',
+        });
+        const ctx = createContextWithRows(5);
+        const request = buildBackendRequestFromChartContext(ctx, 'r-top-5', config);
+
+        expect(request.limit).toBe(5);
+        expect(request.filters.extra.nativeRowsInput).toBe(5);
+        expect(request.filters.extra.thoughtSpotResultWindowLimit).toBe(5);
+        expect(typeof request.filters.extra.nativeDataSignature).toBe('string');
+    });
+
+    it('changes native signature when visible rows change', () => {
+        const first = createContextWithRows(5).getChartModel();
+        const second = createContextWithRows(5, 'changed-label').getChartModel();
+
+        expect(buildNativeDataSignature(first)).not.toBe(buildNativeDataSignature(second));
+    });
+
+    it('clamps backend response rows to native row count', () => {
+        const response = createResponse(false, 'mock', 12);
+        const chartData = normalizeBackendRowsToChartData(response, 'revenue', 5);
+
+        expect(chartData.rowsRendered).toBe(5);
+        expect(chartData.sourceRowCount).toBe(5);
+        expect(chartData.truncated).toBe(true);
+        expect(chartData.labels).toHaveLength(5);
+    });
+
+    it('exposes flat backend request context fields', () => {
+        const context = getBackendRequestContext(createContextWithRows(5).getChartModel(), getByocRuntimeConfig({}));
+
+        expect(context).toMatchObject({
+            nativeRowsInput: 5,
+            effectiveBackendLimit: 5,
+        });
+        expect(context.nativeDataSignatureShort).toHaveLength(12);
     });
 
     it('maps backend response source to perf path', () => {
@@ -95,14 +139,21 @@ function createRequest(): BackendChartDataRequest {
     };
 }
 
-function createResponse(cacheHit: boolean, source: BackendChartDataResponse['source']): BackendChartDataResponse {
+function createResponse(
+    cacheHit: boolean,
+    source: BackendChartDataResponse['source'],
+    rowCount = 1,
+): BackendChartDataResponse {
     return {
         cacheHit,
         source,
         formatUsed: source === 'databricks-arrow' ? 'arrow-backend' : 'chart-json',
-        rows: [{ label: 'A', value: 12.34 }],
+        rows: Array.from({ length: rowCount }, (_value, index) => ({
+            label: `A-${index}`,
+            value: 12.34 + index,
+        })),
         meta: {
-            rowCount: 1,
+            rowCount,
             truncated: false,
             cacheKey: 'cache-key',
             requestId: 'r-1',
@@ -119,4 +170,36 @@ function createResponse(cacheHit: boolean, source: BackendChartDataResponse['sou
             cacheWriteMs: 0,
         },
     };
+}
+
+function createContextWithRows(rowCount: number, firstLabel = 'label-0') {
+    const labels = Array.from({ length: rowCount }, (_value, index) =>
+        index === 0 ? firstLabel : `label-${index}`,
+    );
+    return {
+        getChartModel: () => ({
+            columns: [
+                { id: 'location_name', name: 'location_name', type: 'ATTRIBUTE' },
+                { id: 'revenue', name: 'revenue', type: 'MEASURE' },
+            ],
+            config: {
+                chartConfig: [
+                    {
+                        dimensions: [
+                            { key: 'x', columns: [{ id: 'location_name', name: 'location_name' }] },
+                            { key: 'y', columns: [{ id: 'revenue', name: 'revenue' }] },
+                        ],
+                    },
+                ],
+            },
+            data: [
+                {
+                    data: {
+                        columns: ['location_name', 'revenue'],
+                        dataValue: labels.map((label, index) => [label, index + 1]),
+                    },
+                },
+            ],
+        }),
+    } as any;
 }

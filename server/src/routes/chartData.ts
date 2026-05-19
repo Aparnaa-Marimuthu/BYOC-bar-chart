@@ -110,7 +110,7 @@ function createMockRows(request: ChartDataRequest): ChartRow[] {
     const seed = `${request.dimension}:${request.metric}:${JSON.stringify(request.filters ?? {})}`;
     const baseValue = Array.from(seed).reduce((sum, character) => sum + character.charCodeAt(0), 0);
 
-    return Array.from({ length: Math.min(limit, 12) }, (_, index) => ({
+    return Array.from({ length: limit }, (_, index) => ({
         label: `${request.dimension}-${index + 1}`,
         value: Math.round((baseValue + index * 37) * 100) / 100,
     }));

@@ -47,6 +47,28 @@ describe('chart-data routes', () => {
         await app.close();
     });
 
+    it('respects request limit in mock mode', async () => {
+        const app = await createApp(loadConfig({ BYOC_USE_MOCK_BACKEND: 'true' }));
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/v1/byoc/chart-data',
+            payload: createPayload({ limit: 5 }),
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+            cacheHit: false,
+            source: 'mock',
+            meta: {
+                rowCount: 5,
+            },
+        });
+        expect(response.json().rows).toHaveLength(5);
+
+        await app.close();
+    });
+
     it('returns CONFIG_ERROR when Databricks is missing and mock mode is disabled', async () => {
         const app = await createApp(loadConfig({ BYOC_USE_MOCK_BACKEND: 'false' }));
 
@@ -68,7 +90,7 @@ describe('chart-data routes', () => {
     });
 });
 
-function createPayload() {
+function createPayload(overrides: Record<string, unknown> = {}) {
     return {
         requestId: 'r-1',
         chartType: 'bar',
@@ -84,5 +106,6 @@ function createPayload() {
             securityContextHash: 'dev-security',
         },
         returnFormat: 'json',
+        ...overrides,
     };
 }
