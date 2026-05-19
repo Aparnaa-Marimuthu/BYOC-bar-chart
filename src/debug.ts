@@ -10,19 +10,24 @@ export type ByocLogPrefix =
     | '[BYOC:render:done]'
     | '[BYOC:render:error]'
     | '[BYOC:context-menu]'
-    | '[BYOC:perf]';
+    | '[BYOC:perf]'
+    | '[BYOC:backend:request]'
+    | '[BYOC:backend:response]'
+    | '[BYOC:backend:error]'
+    | '[BYOC:backend:fallback]';
 
 export type ByocErrorPhase =
     | 'init'
     | 'config'
     | 'query'
     | 'transform'
+    | 'backend'
     | 'chart-update'
     | 'context-menu';
 
 export interface LastRenderSummary {
     renderId: string;
-    path: 'native-thoughtspot';
+    path: 'native-thoughtspot' | 'backend-cache' | 'backend-databricks-arrow' | 'backend-mock';
     rowsInput: number;
     rowsRendered: number;
     truncated: boolean;
@@ -49,6 +54,10 @@ export interface SafeDebugConfig {
     debug: boolean;
     debugData: boolean;
     enableCustomDrill: boolean;
+    dataMode: string;
+    backendUrl: string;
+    backendTimeoutMs: number;
+    backendCacheDebug: boolean;
     animationFreeRowThreshold: number;
 }
 
@@ -147,6 +156,10 @@ export function installDebugHelper(config: ByocRuntimeConfig): void {
         debug: config.debug,
         debugData: config.debugData,
         enableCustomDrill: config.enableCustomDrill,
+        dataMode: config.dataMode,
+        backendUrl: config.backendUrl,
+        backendTimeoutMs: config.backendTimeoutMs,
+        backendCacheDebug: config.backendCacheDebug,
         animationFreeRowThreshold: config.animationFreeRowThreshold,
     };
     version = `${config.appVersion}@${config.buildTime}`;

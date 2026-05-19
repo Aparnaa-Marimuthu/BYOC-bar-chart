@@ -14,6 +14,8 @@ describe('BYOC runtime config', () => {
         expect(config.debug).toBe(false);
         expect(config.debugData).toBe(false);
         expect(config.enableCustomDrill).toBe(false);
+        expect(config.dataMode).toBe('native');
+        expect(config.backendUrl).toBe('http://localhost:8787');
     });
 
     it('clamps numeric environment values', () => {
@@ -36,5 +38,23 @@ describe('BYOC runtime config', () => {
             querySize: 1,
             maxBars: 1,
         });
+    });
+
+    it('parses backend data mode config safely', () => {
+        expect(
+            getByocRuntimeConfig({
+                VITE_BYOC_DATA_MODE: 'backend',
+                VITE_BYOC_BACKEND_URL: 'https://backend.example.com/',
+                VITE_BYOC_BACKEND_TIMEOUT_MS: '5000',
+                VITE_BYOC_BACKEND_CACHE_DEBUG: 'true',
+            }),
+        ).toMatchObject({
+            dataMode: 'backend',
+            backendUrl: 'https://backend.example.com',
+            backendTimeoutMs: 5000,
+            backendCacheDebug: true,
+        });
+
+        expect(getByocRuntimeConfig({ VITE_BYOC_DATA_MODE: 'bad-value' }).dataMode).toBe('native');
     });
 });

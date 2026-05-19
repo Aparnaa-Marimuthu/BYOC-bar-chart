@@ -1,6 +1,6 @@
 export interface NativeRenderPerformance {
     renderId: string;
-    path: 'native-thoughtspot';
+    path: 'native-thoughtspot' | 'backend-cache' | 'backend-databricks-arrow' | 'backend-mock';
     rowsInput: number;
     rowsRendered: number;
     truncated: boolean;

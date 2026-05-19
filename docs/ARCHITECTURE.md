@@ -14,12 +14,10 @@ The chart keeps the existing ThoughtSpot right-click context menu. Event
 listeners are attached once per canvas and read the latest chart state from a
 shared interaction state object.
 
-## Not Implemented In This Patch
+## Optional Phase 2 Backend Path
 
-Backend mode, hybrid mode, Databricks retrieval, and Apache Arrow parsing are
-not active in this codebase yet.
-
-The future backend path should be:
+Backend mode is available only when explicitly configured with
+`VITE_BYOC_DATA_MODE=backend`. Native remains the default.
 
 ```text
 BYOC frontend
@@ -35,3 +33,31 @@ ThoughtSpot `chartModel.data` does not expose native Apache Arrow buffers to
 this custom chart. Arrow should therefore be introduced only through a secure
 backend owned by the application, not by putting database credentials in the
 browser.
+
+## Backend Components
+
+The backend lives in `server/` as an independent Node + TypeScript service.
+
+- Fastify routes provide health, chart data, cache stats, and cache invalidation.
+- Memory cache is the working POC provider with TTL and max-item eviction.
+- Cache keys are SHA-256 hashes over normalized request context and include
+  `queryVersion`, optional `dataVersion`, tenant, user or security context,
+  chart fields, filters, sort, limit, and return format.
+- Mock backend mode allows cache hit/miss testing without Databricks credentials.
+- Databricks Statement Execution API support uses `ARROW_STREAM` and
+  `EXTERNAL_LINKS`; Arrow chunks are downloaded and parsed server-side.
+
+## Deployment Shape
+
+Deploy the frontend anywhere ThoughtSpot can load it, such as Vercel. For
+mock-mode testing, the backend can be deployed as a second Vercel project using
+the same repo with `Root Directory: server`.
+
+The backend supports two entrypoints:
+
+- `server/src/index.ts` for local or long-running Node usage with `app.listen()`.
+- `server/api/[...path].ts` for Vercel serverless usage without `app.listen()`.
+
+Vercel serverless is not the recommended production target for Databricks
+polling or large Arrow downloads. Production should use a long-running Node
+service or container with controlled CORS.

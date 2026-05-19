@@ -17,6 +17,7 @@ import {
     createNativeDataMemo,
     transformNativeData,
 } from './nativeData';
+import type { NativeChartData } from './nativeData';
 import {
     debugLog,
     debugWarn,
@@ -47,10 +48,19 @@ import type {
     ThoughtSpotEventEmitter,
     ThoughtSpotInteractionState,
 } from './thoughtspotInteractions';
+import {
+    backendPathFromResponse,
+    buildBackendRequestFromChartContext,
+    fetchBackendChartData,
+    normalizeBackendRowsToChartData,
+} from './services/backendDataClient';
+import type { BackendChartDataResponse, BackendDataError } from './services/backendDataClient';
 
 let chartInstance: NativeBarChart | null = null;
 let initialRenderGuardUsed = false;
 let lastInteractionRenderId: string | undefined;
+let latestBackendRequestSequence = 0;
+let activeBackendController: AbortController | null = null;
 
 const nativeDataMemo = createNativeDataMemo();
 const interactionState: ThoughtSpotInteractionState = {
@@ -277,6 +287,7 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
     const chartModel = ctx.getChartModel();
     debugLog(byocRuntimeConfig.debug, '[BYOC:render:start]', {
         renderId,
+        dataMode: byocRuntimeConfig.dataMode,
         chartModelExists: Boolean(chartModel),
         chartModelDataExists: Boolean(chartModel?.data?.[0]?.data),
         rowsInput: getDetectedRowCount(chartModel),
@@ -284,7 +295,9 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
 
     try {
         await ctx.emitEvent(ChartToTSEvent.RenderStart);
-        const outcome = render(ctx, renderId);
+        const outcome = byocRuntimeConfig.dataMode === 'backend'
+            ? await renderBackendChart(ctx, renderId)
+            : render(ctx, renderId);
 
         if (outcome.emitRenderError) {
             await ctx.emitEvent(ChartToTSEvent.RenderError, {
@@ -313,6 +326,159 @@ async function renderChart(ctx: CustomChartContext): Promise<void> {
         );
         await emitRenderErrorSafely(ctx, sourceError);
     }
+}
+
+async function renderBackendChart(
+    ctx: CustomChartContext,
+    renderId: string,
+): Promise<RenderOutcome> {
+    const renderStartMs = nowMs();
+    const canvas = document.getElementById('chart') as HTMLCanvasElement | null;
+
+    if (!canvas) {
+        setChartUiState('missing-canvas');
+        const summary = buildRenderSummary({
+            renderId,
+            rowsInput: 0,
+            rowsRendered: 0,
+            truncated: false,
+            memoCacheHit: false,
+            chartAction: chartInstance ? 'update' : 'create',
+            updateMode: 'default',
+            nativeDataTransformMs: 0,
+            chartUpdateMs: 0,
+            renderTotalMs: elapsedMs(renderStartMs),
+        }, 'backend-mock');
+        setLastRenderSummary(summary);
+        return {
+            emitRenderError: true,
+            errorMessage: 'Chart canvas was not found.',
+            summary,
+        };
+    }
+
+    setChartUiState('loading');
+    activeBackendController?.abort();
+    const backendController = new AbortController();
+    activeBackendController = backendController;
+    latestBackendRequestSequence += 1;
+    const requestSequence = latestBackendRequestSequence;
+
+    const request = buildBackendRequestFromChartContext(ctx, renderId, byocRuntimeConfig);
+    debugLog(byocRuntimeConfig.debug, '[BYOC:backend:request]', {
+        requestId: request.requestId,
+        mode: byocRuntimeConfig.dataMode,
+        dimension: request.dimension,
+        metric: request.metric,
+        limit: request.limit,
+    });
+
+    let response: BackendChartDataResponse;
+    const backendRequestStartMs = nowMs();
+    try {
+        response = await fetchBackendChartData(request, byocRuntimeConfig, backendController.signal);
+    } catch (error: unknown) {
+        const backendError = error as BackendDataError;
+        if (backendError.code === 'ABORTED') {
+            const summary = buildRenderSummary({
+                renderId,
+                rowsInput: 0,
+                rowsRendered: 0,
+                truncated: false,
+                memoCacheHit: false,
+                chartAction: chartInstance ? 'update' : 'create',
+                updateMode: 'default',
+                nativeDataTransformMs: 0,
+                chartUpdateMs: 0,
+                renderTotalMs: elapsedMs(renderStartMs),
+            }, 'backend-mock');
+            return { emitRenderError: false, summary };
+        }
+
+        debugLog(byocRuntimeConfig.debug, '[BYOC:backend:error]', {
+            requestId: backendError.requestId || request.requestId,
+            code: backendError.code || 'BACKEND_ERROR',
+            message: backendError.message || 'Backend chart data request failed.',
+        });
+        setChartUiState('error', 'Backend chart data request failed.');
+        throw new ByocPhaseError(error, 'backend');
+    }
+
+    if (requestSequence !== latestBackendRequestSequence) {
+        debugLog(byocRuntimeConfig.debug, '[BYOC:backend:fallback]', {
+            requestId: request.requestId,
+            reason: 'stale-response',
+        });
+        const summary = buildRenderSummary({
+            renderId,
+            rowsInput: response.meta.rowCount,
+            rowsRendered: 0,
+            truncated: response.meta.truncated,
+            memoCacheHit: response.cacheHit,
+            chartAction: chartInstance ? 'update' : 'create',
+            updateMode: 'default',
+            nativeDataTransformMs: 0,
+            chartUpdateMs: 0,
+            renderTotalMs: elapsedMs(renderStartMs),
+        }, backendPathFromResponse(response));
+        return { emitRenderError: false, summary };
+    }
+
+    debugLog(byocRuntimeConfig.debug, '[BYOC:backend:response]', {
+        requestId: response.meta.requestId,
+        cacheHit: response.cacheHit,
+        source: response.source,
+        rowsReturned: response.rows.length,
+        totalMs: response.timing.totalMs,
+        cacheLookupMs: response.timing.cacheLookupMs,
+        databricksWaitMs: response.timing.databricksWaitMs,
+        arrowDownloadMs: response.timing.arrowDownloadMs,
+        arrowParseMs: response.timing.arrowParseMs,
+    });
+
+    const chartData = normalizeBackendRowsToChartData(response, request.metric);
+    if (chartData.rowsRendered === 0) {
+        setChartUiState('empty', 'Backend returned no data to display.');
+        const summary = buildRenderSummary({
+            renderId,
+            rowsInput: chartData.sourceRowCount,
+            rowsRendered: 0,
+            truncated: chartData.truncated,
+            memoCacheHit: response.cacheHit,
+            chartAction: chartInstance ? 'update' : 'create',
+            updateMode: 'default',
+            nativeDataTransformMs: 0,
+            chartUpdateMs: 0,
+            renderTotalMs: elapsedMs(renderStartMs),
+        }, backendPathFromResponse(response));
+        setLastRenderSummary(summary);
+        return { emitRenderError: false, summary };
+    }
+
+    const chartResult = renderChartData(canvas, chartData, renderId);
+    interactionState.rawData = null;
+    interactionState.ctx = ctx as unknown as ThoughtSpotEventEmitter;
+    interactionState.chart = chartInstance;
+
+    const summary = buildRenderSummary({
+        renderId,
+        rowsInput: chartData.sourceRowCount,
+        rowsRendered: chartData.rowsRendered,
+        truncated: chartData.truncated,
+        memoCacheHit: response.cacheHit,
+        chartAction: chartResult.chartAction,
+        updateMode: chartResult.updateMode,
+        nativeDataTransformMs: 0,
+        chartUpdateMs: chartResult.chartUpdateMs,
+        renderTotalMs: elapsedMs(renderStartMs),
+    }, backendPathFromResponse(response));
+
+    debugLog(byocRuntimeConfig.debug, '[BYOC:perf]', {
+        ...summary,
+        backendRequestMs: elapsedMs(backendRequestStartMs),
+    });
+    setLastRenderSummary(summary);
+    return { emitRenderError: false, summary };
 }
 
 async function emitRenderErrorSafely(
@@ -418,11 +584,51 @@ async function bootstrapChart(): Promise<void> {
 
 function buildRenderSummary(
     summary: Omit<LastRenderSummary, 'path'>,
+    path: LastRenderSummary['path'] = 'native-thoughtspot',
 ): LastRenderSummary {
     return {
-        path: 'native-thoughtspot',
+        path,
         ...summary,
     };
+}
+
+function renderChartData(
+    canvas: HTMLCanvasElement,
+    chartData: NativeChartData,
+    renderId: string,
+): { chartAction: 'create' | 'update'; updateMode: 'default' | 'none'; chartUpdateMs: number } {
+    setChartUiState('ready');
+    const chartAction: 'create' | 'update' = chartInstance ? 'update' : 'create';
+    const updateModeValue = getChartUpdateMode(
+        chartData,
+        byocRuntimeConfig.animationFreeRowThreshold,
+    );
+    const updateMode = updateModeValue === 'none' ? 'none' : 'default';
+    const chartUpdateStartMs = nowMs();
+
+    if (chartInstance) {
+        updateExistingChart(
+            chartInstance,
+            chartData,
+            byocRuntimeConfig.animationFreeRowThreshold,
+        );
+    } else {
+        chartInstance = createBarChart(
+            canvas,
+            chartData,
+            byocRuntimeConfig.animationFreeRowThreshold,
+        );
+    }
+
+    const chartUpdateMs = elapsedMs(chartUpdateStartMs);
+    debugLog(byocRuntimeConfig.debug, '[BYOC:render:chart]', {
+        renderId,
+        chartAction,
+        updateMode,
+        chartInstanceDestroyUsed: false,
+    });
+
+    return { chartAction, updateMode, chartUpdateMs };
 }
 
 function getDetectedRowCount(chartModel: ChartModel | null | undefined): number {
