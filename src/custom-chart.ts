@@ -357,13 +357,18 @@ function getQueriesFromChartConfigWithDebug(chartConfig: ChartConfig[]): Query[]
             chartConfig,
             byocRuntimeConfig.querySize,
         );
+        const firstQueryParams = queries[0]?.queryParams;
         debugLog(byocRuntimeConfig.debug, '[BYOC:query]', {
-            chartConfigDimensions: summarizeChartConfig(chartConfig),
+            event: 'getQueriesFromChartConfig',
             queryColumnsCount: queries.reduce(
                 (count, query) => count + query.queryColumns.length,
                 0,
             ),
-            queryParams: queries[0]?.queryParams ?? null,
+            queryParamOffset: firstQueryParams?.offset ?? 0,
+            queryParamSize: firstQueryParams?.size ?? 0,
+            chartConfigCount: chartConfig.length,
+            dimensionKeys: flattenDimensionKeys(chartConfig),
+            columnNames: flattenColumnNames(chartConfig),
         });
         return queries;
     } catch (error: unknown) {
@@ -439,6 +444,22 @@ function summarizeChartConfig(chartConfig: ChartConfig[]) {
             columnNames: dimension.columns.map((column) => column.name),
         })),
     }));
+}
+
+function flattenDimensionKeys(chartConfig: ChartConfig[]): string {
+    return chartConfig
+        .flatMap((config) => config.dimensions.map((dimension) => dimension.key))
+        .join(',');
+}
+
+function flattenColumnNames(chartConfig: ChartConfig[]): string {
+    return chartConfig
+        .flatMap((config) =>
+            config.dimensions.flatMap((dimension) =>
+                dimension.columns.map((column) => column.name),
+            ),
+        )
+        .join(',');
 }
 
 void bootstrapChart().catch((error: unknown) => {

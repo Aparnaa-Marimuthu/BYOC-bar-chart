@@ -53,6 +53,35 @@ Debug logs are copy/paste-friendly from browser DevTools and use these prefixes:
 Production remains quiet when `VITE_BYOC_DEBUG=false`; only critical safe errors
 are logged.
 
+`[BYOC:query]` uses flat primitive fields so Chrome DevTools displays the values
+without expanding nested objects:
+
+```text
+event: "getQueriesFromChartConfig"
+queryColumnsCount: 2
+queryParamOffset: 0
+queryParamSize: 1000
+chartConfigCount: 1
+dimensionKeys: "x,y"
+columnNames: "Product,Revenue"
+```
+
+`[BYOC:perf]` also uses flat primitive fields:
+
+```text
+renderId: "native-render-1"
+path: "native-thoughtspot"
+rowsInput: 96
+rowsRendered: 96
+truncated: false
+memoCacheHit: false
+chartAction: "create"
+updateMode: "default"
+nativeDataTransformMs: 3.1
+chartUpdateMs: 10.2
+renderTotalMs: 18.4
+```
+
 ## Benchmarking
 
 Use the same ThoughtSpot answer and compare:

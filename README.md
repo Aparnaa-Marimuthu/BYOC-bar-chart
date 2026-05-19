@@ -61,7 +61,8 @@ the SDK postMessage request.
 3. Open the ThoughtSpot BYOC chart that loads the Vercel URL.
 4. Open browser DevTools and select the Console tab.
 5. Confirm `[BYOC:init]` logs show initialization starting and completing.
-6. Confirm `[BYOC:query]` logs show `queryParams: { offset: 0, size: 1000 }`
+6. Confirm `[BYOC:query]` logs show `queryParamOffset: 0` and
+   `queryParamSize: 1000`
    or your configured size.
 7. Confirm `[BYOC:render:done]` appears after render.
 8. Confirm there are no repeated polling logs.
@@ -77,11 +78,11 @@ Expected debug log shape:
 ```text
 [BYOC:init] { event: "starting", debug: true, version: "0.0.0@local" }
 [BYOC:init] { event: "complete", hasInitialData: true, oneShotInitialRenderGuardUsed: false }
-[BYOC:query] { queryColumnsCount: 2, queryParams: { offset: 0, size: 1000 } }
+[BYOC:query] { event: "getQueriesFromChartConfig", queryColumnsCount: 2, queryParamOffset: 0, queryParamSize: 1000, chartConfigCount: 1, dimensionKeys: "x,y", columnNames: "Product,Revenue" }
 [BYOC:render:start] { renderId: "native-render-1", chartModelExists: true, chartModelDataExists: true }
 [BYOC:render:data] { rowsInput: 96, rowsRendered: 96, truncated: false, memoCacheHit: false }
 [BYOC:render:chart] { chartAction: "create", updateMode: "default", chartInstanceDestroyUsed: false }
-[BYOC:perf] { renderTotalMs: 18.4, nativeDataTransformMs: 3.1, chartUpdateMs: 10.2 }
+[BYOC:perf] { renderId: "native-render-1", path: "native-thoughtspot", rowsInput: 96, rowsRendered: 96, truncated: false, memoCacheHit: false, chartAction: "create", updateMode: "default", nativeDataTransformMs: 3.1, chartUpdateMs: 10.2, renderTotalMs: 18.4 }
 [BYOC:render:done] { renderId: "native-render-1", rowsRendered: 96, truncated: false }
 ```
 
