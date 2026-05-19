@@ -100,6 +100,10 @@ Build Command: npm run build
 Output Directory: leave blank
 ```
 
+`server/public/.gitkeep` exists only to satisfy Vercel's static output
+expectation for this API-only backend project. The Vercel UI Output Directory
+can remain blank.
+
 The same backend also supports long-running local/container usage:
 
 ```bash

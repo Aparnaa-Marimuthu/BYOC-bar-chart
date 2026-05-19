@@ -165,6 +165,9 @@ Build Command: npm run build
 Output Directory: leave blank
 ```
 
+The backend includes `server/public/.gitkeep` only to satisfy Vercel's static
+output expectation for this API-only project. It does not serve frontend assets.
+
 Backend Vercel env for mock testing:
 
 ```text
