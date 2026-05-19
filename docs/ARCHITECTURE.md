@@ -56,7 +56,9 @@ the same repo with `Root Directory: server`.
 The backend supports two entrypoints:
 
 - `server/src/index.ts` for local or long-running Node usage with `app.listen()`.
-- `server/api/[...path].ts` for Vercel serverless usage without `app.listen()`.
+- explicit `server/api/v1/**` Vercel function files for serverless usage
+  without `app.listen()`. These route files share `server/api/_handler.ts`,
+  which adapts Vercel requests to the Fastify app via `app.inject()`.
 
 Vercel serverless is not the recommended production target for Databricks
 polling or large Arrow downloads. Production should use a long-running Node

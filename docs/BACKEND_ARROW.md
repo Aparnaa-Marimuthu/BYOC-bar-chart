@@ -104,6 +104,18 @@ Output Directory: leave blank
 expectation for this API-only backend project. The Vercel UI Output Directory
 can remain blank.
 
+The backend exposes explicit Vercel API route files:
+
+```text
+server/api/v1/health.ts
+server/api/v1/byoc/chart-data.ts
+server/api/v1/byoc/cache/stats.ts
+server/api/v1/byoc/cache/invalidate.ts
+```
+
+All route files use `server/api/_handler.ts`, which adapts Vercel requests to
+the shared Fastify app without calling `app.listen()`.
+
 The same backend also supports long-running local/container usage:
 
 ```bash
