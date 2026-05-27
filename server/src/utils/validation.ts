@@ -1,4 +1,10 @@
 import type { BackendConfig } from '../config.js';
+import {
+    isSafeFieldName,
+    normalizeFieldName,
+    resolveDimension,
+    resolveMetric,
+} from '../services/fieldResolver.js';
 import type { ChartDataRequest } from '../types/chart.js';
 import { ApiError } from '../types/errors.js';
 
@@ -20,10 +26,12 @@ export function validateChartDataRequest(
     if (request.returnFormat !== 'json') {
         throw new ApiError('BAD_REQUEST', 'Only JSON responses are supported.', 400);
     }
-    if (!request.dimension || !config.allowedDimensions.includes(request.dimension)) {
+    const dimension = normalizeFieldName(request.dimension);
+    const metric = normalizeFieldName(request.metric);
+    if (!dimension || !isSafeFieldName(dimension)) {
         throw new ApiError('BAD_REQUEST', 'Unsupported dimension.', 400);
     }
-    if (!request.metric || !config.allowedMetrics.includes(request.metric)) {
+    if (!metric || !isSafeFieldName(metric)) {
         throw new ApiError('BAD_REQUEST', 'Unsupported metric.', 400);
     }
     if (!request.context?.tenantId || (!request.context.userId && !request.context.securityContextHash)) {
@@ -54,12 +62,15 @@ export function validateChartDataRequest(
         requestId: typeof request.requestId === 'string' ? request.requestId : undefined,
         chartType: 'bar',
         mode: 'chart',
-        dimension: request.dimension,
-        metric: request.metric,
+        dimension,
+        metric,
         filters,
+        fields: request.fields,
         sort: request.sort ?? { field: 'value', direction: 'desc' },
         limit,
         context: request.context,
+        resolvedDimension: resolveDimension(dimension, config, request.fields?.dimension) ?? undefined,
+        resolvedMetric: resolveMetric(metric, config, request.fields?.metric) ?? undefined,
         returnFormat: 'json',
     };
 }

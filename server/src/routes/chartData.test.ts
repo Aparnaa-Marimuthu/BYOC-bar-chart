@@ -69,6 +69,81 @@ describe('chart-data routes', () => {
         await app.close();
     });
 
+    it('accepts metric aliases in mock mode', async () => {
+        const app = await createApp(loadConfig({ BYOC_USE_MOCK_BACKEND: 'true' }));
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/v1/byoc/chart-data',
+            payload: createPayload({
+                dimension: 'product_category',
+                metric: 'total_revenue',
+                limit: 7,
+            }),
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+            cacheHit: false,
+            source: 'mock',
+            meta: {
+                requestedMetric: 'total_revenue',
+                canonicalMetric: 'revenue',
+                resolvedMetric: {
+                    columnName: 'revenue',
+                    aggregation: 'SUM',
+                },
+            },
+        });
+        expect(response.json().rows).toHaveLength(7);
+
+        await app.close();
+    });
+
+    it('accepts unknown but safe metric names in mock mode', async () => {
+        const app = await createApp(loadConfig({ BYOC_USE_MOCK_BACKEND: 'true' }));
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/v1/byoc/chart-data',
+            payload: createPayload({ metric: 'new_model_measure', limit: 3 }),
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+            cacheHit: false,
+            source: 'mock',
+            meta: {
+                requestedDimension: 'location_name',
+                requestedMetric: 'new_model_measure',
+            },
+        });
+        expect(response.json().meta).not.toHaveProperty('canonicalMetric');
+        expect(response.json().rows).toHaveLength(3);
+
+        await app.close();
+    });
+
+    it('returns FIELD_UNRESOLVED for unresolved Databricks fields', async () => {
+        const app = await createApp(loadConfig({ BYOC_USE_MOCK_BACKEND: 'false' }));
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/v1/byoc/chart-data',
+            payload: createPayload({ metric: 'new_model_measure' }),
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toMatchObject({
+            error: {
+                code: 'FIELD_UNRESOLVED',
+                message: 'Backend could not safely resolve the selected fields.',
+            },
+        });
+
+        await app.close();
+    });
+
     it('returns CONFIG_ERROR when Databricks is missing and mock mode is disabled', async () => {
         const app = await createApp(loadConfig({ BYOC_USE_MOCK_BACKEND: 'false' }));
 

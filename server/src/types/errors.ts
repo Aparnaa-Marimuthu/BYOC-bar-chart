@@ -4,6 +4,7 @@ export type ErrorCode =
     | 'CACHE_ERROR'
     | 'DB_ERROR'
     | 'ARROW_PARSE_ERROR'
+    | 'FIELD_UNRESOLVED'
     | 'TIMEOUT'
     | 'CONFIG_ERROR';
 

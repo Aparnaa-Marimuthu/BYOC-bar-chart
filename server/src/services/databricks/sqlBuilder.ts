@@ -1,4 +1,5 @@
 import type { BackendConfig } from '../../config.js';
+import { resolveDimension, resolveMetric } from '../fieldResolver.js';
 import type { ChartDataRequest } from '../../types/chart.js';
 import { ApiError } from '../../types/errors.js';
 
@@ -13,32 +14,17 @@ export interface BuiltSql {
     parameters: SqlParameter[];
 }
 
-const DIMENSION_COLUMNS: Record<string, string> = {
-    product_category: 'product_category',
-    product_name: 'product_name',
-    region: 'region',
-    channel: 'channel',
-    location_name: 'location_name',
-    base: 'base',
-};
-
-const METRIC_EXPRESSIONS: Record<string, string> = {
-    revenue: 'SUM(revenue)',
-    units_sold: 'SUM(units_sold)',
-    order_count: 'COUNT(*)',
-    first_ninety_day_attrition_rate: 'AVG(first_ninety_day_attrition_rate)',
-    average_turn_time: 'AVG(average_turn_time)',
-    average_turnaround_time_min: 'AVG(average_turnaround_time_min)',
-};
-
 export function buildChartSql(request: ChartDataRequest, config: BackendConfig): BuiltSql {
-    const dimensionColumn = DIMENSION_COLUMNS[request.dimension];
-    const metricExpression = METRIC_EXPRESSIONS[request.metric];
-    if (!dimensionColumn) {
-        throw new ApiError('BAD_REQUEST', 'Unsupported dimension.', 400);
-    }
-    if (!metricExpression) {
-        throw new ApiError('BAD_REQUEST', 'Unsupported metric.', 400);
+    const resolvedDimension = request.resolvedDimension ??
+        resolveDimension(request.dimension, config, request.fields?.dimension);
+    const resolvedMetric = request.resolvedMetric ??
+        resolveMetric(request.metric, config, request.fields?.metric);
+    if (!resolvedDimension || !resolvedMetric) {
+        throw new ApiError(
+            'FIELD_UNRESOLVED',
+            'Backend could not safely resolve the selected fields.',
+            400,
+        );
     }
     if (!config.databricks.catalog || !config.databricks.schema || !config.databricks.table) {
         throw new ApiError('CONFIG_ERROR', 'Databricks table configuration is missing.', 500);
@@ -61,11 +47,11 @@ export function buildChartSql(request: ChartDataRequest, config: BackendConfig):
     }
 
     if (request.filters?.parentDimension && request.filters.parentValue !== undefined) {
-        const parentColumn = DIMENSION_COLUMNS[request.filters.parentDimension];
-        if (!parentColumn) {
-            throw new ApiError('BAD_REQUEST', 'Unsupported parent dimension.', 400);
+        const parentDimension = resolveDimension(request.filters.parentDimension, config);
+        if (!parentDimension) {
+            throw new ApiError('FIELD_UNRESOLVED', 'Backend could not safely resolve the parent dimension.', 400);
         }
-        whereClauses.push(`${quoteIdentifier(parentColumn)} = :parent_value`);
+        whereClauses.push(`${quoteIdentifier(parentDimension.columnName)} = :parent_value`);
         parameters.push({
             name: 'parent_value',
             value: String(request.filters.parentValue),
@@ -75,11 +61,11 @@ export function buildChartSql(request: ChartDataRequest, config: BackendConfig):
 
     const statement = `
 SELECT
-  CAST(${quoteIdentifier(dimensionColumn)} AS STRING) AS label,
-  CAST(${metricExpression} AS DOUBLE) AS value
+  CAST(${quoteIdentifier(resolvedDimension.columnName)} AS STRING) AS label,
+  CAST(${resolvedMetric.aggregation}(${quoteIdentifier(resolvedMetric.columnName)}) AS DOUBLE) AS value
 FROM ${tableName}
 WHERE ${whereClauses.join('\n  AND ')}
-GROUP BY ${quoteIdentifier(dimensionColumn)}
+GROUP BY ${quoteIdentifier(resolvedDimension.columnName)}
 ORDER BY value ${request.sort?.direction === 'asc' ? 'ASC' : 'DESC'}
 LIMIT ${request.limit ?? 100}
 `.trim();

@@ -47,6 +47,15 @@ describe('cache key', () => {
 
         expect(buildCacheKey(first)).not.toBe(buildCacheKey(second));
     });
+
+    it('keeps requested metric aliases distinct while resolving the canonical metric', () => {
+        expect(buildCacheKey(createRequest({ metric: 'revenue' }))).not.toBe(
+            buildCacheKey(createRequest({ metric: 'total_revenue' })),
+        );
+        expect(buildCacheKey(createRequest({ metric: 'total_revenue' }))).not.toBe(
+            buildCacheKey(createRequest({ metric: 'sum_revenue' })),
+        );
+    });
 });
 
 function createRequest(overrides: Partial<ChartDataRequest> = {}): ChartDataRequest {

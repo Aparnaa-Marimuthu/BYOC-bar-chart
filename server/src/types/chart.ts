@@ -18,6 +18,23 @@ export interface ChartDataRequest {
         parentValue?: string;
         extra?: Record<string, unknown>;
     };
+    fields?: {
+        dimension?: {
+            displayName?: string;
+            normalizedName?: string;
+            columnId?: string;
+            columnType?: string | number;
+            dataType?: string | number;
+        };
+        metric?: {
+            displayName?: string;
+            normalizedName?: string;
+            columnId?: string;
+            columnType?: string | number;
+            dataType?: string | number;
+            aggregationLabel?: string;
+        };
+    };
     sort?: {
         field: 'value';
         direction: 'asc' | 'desc';
@@ -31,6 +48,17 @@ export interface ChartDataRequest {
         chartId?: string;
         securityContextHash?: string;
         dataVersion?: string;
+    };
+    resolvedDimension?: {
+        requestedDimension: string;
+        canonicalDimension: string;
+        columnName: string;
+    };
+    resolvedMetric?: {
+        requestedMetric: string;
+        canonicalMetric: string;
+        columnName: string;
+        aggregation: 'SUM' | 'AVG' | 'COUNT';
     };
     returnFormat: 'json';
 }
@@ -58,6 +86,18 @@ export interface ChartDataResponse {
         cacheKey: string;
         dataVersion?: string;
         requestId: string;
+        requestedDimension?: string;
+        canonicalDimension?: string;
+        resolvedDimension?: {
+            columnName: string;
+        };
+        requestedMetric?: string;
+        canonicalMetric?: string;
+        resolvedMetric?: {
+            columnName: string;
+            aggregation: 'SUM' | 'AVG' | 'COUNT';
+        };
+        fallbackEligible?: boolean;
     };
     timing: ChartDataTiming;
 }

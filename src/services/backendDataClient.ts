@@ -19,6 +19,12 @@ export interface BackendChartDataRequest {
             [key: string]: unknown;
         };
     };
+    fields: {
+        dimension: BackendFieldMetadata;
+        metric: BackendFieldMetadata & {
+            aggregationLabel?: string;
+        };
+    };
     sort: {
         field: 'value';
         direction: 'desc';
@@ -46,6 +52,18 @@ export interface BackendChartDataResponse {
         cacheKey: string;
         dataVersion?: string;
         requestId: string;
+        requestedDimension?: string;
+        canonicalDimension?: string;
+        resolvedDimension?: {
+            columnName: string;
+        };
+        requestedMetric?: string;
+        canonicalMetric?: string;
+        resolvedMetric?: {
+            columnName: string;
+            aggregation: 'SUM' | 'AVG' | 'COUNT';
+        };
+        fallbackEligible?: boolean;
     };
     timing: {
         totalMs: number;
@@ -70,13 +88,23 @@ export interface BackendRequestContext {
 export class BackendDataError extends Error {
     code: string;
     requestId: string;
+    statusCode: number;
 
-    constructor(code: string, message: string, requestId: string) {
+    constructor(code: string, message: string, requestId: string, statusCode = 0) {
         super(message);
         this.name = 'BackendDataError';
         this.code = code;
         this.requestId = requestId;
+        this.statusCode = statusCode;
     }
+}
+
+export interface BackendFieldMetadata {
+    displayName: string;
+    normalizedName: string;
+    columnId: string;
+    columnType: string | number;
+    dataType: string | number;
 }
 
 export async function fetchBackendChartData(
@@ -106,6 +134,7 @@ export async function fetchBackendChartData(
                 String(body?.error?.code || 'BACKEND_ERROR'),
                 String(body?.error?.message || 'Backend chart data request failed.'),
                 String(body?.error?.requestId || request.requestId),
+                response.status,
             );
         }
 
@@ -146,6 +175,13 @@ export function buildBackendRequestFromChartContext(
         mode: 'chart',
         dimension: normalizeBackendFieldName(dimensionColumn?.name || dimensionColumn?.id || 'location_name'),
         metric: normalizeBackendFieldName(metricColumn?.name || metricColumn?.id || 'first_ninety_day_attrition_rate'),
+        fields: {
+            dimension: buildBackendFieldMetadata(dimensionColumn),
+            metric: {
+                ...buildBackendFieldMetadata(metricColumn),
+                aggregationLabel: metricColumn?.name || metricColumn?.id || '',
+            },
+        },
         filters: {
             extra: {
                 nativeDataSignature: requestContext.nativeDataSignature,
@@ -165,6 +201,12 @@ export function buildBackendRequestFromChartContext(
         },
         returnFormat: 'json',
     };
+}
+
+export function shouldFallbackToNative(error: BackendDataError): boolean {
+    return error.statusCode === 400 ||
+        ['BAD_REQUEST', 'FIELD_UNRESOLVED'].includes(error.code) ||
+        /Unsupported (metric|dimension)/i.test(error.message);
 }
 
 export function normalizeBackendRowsToChartData(
@@ -233,6 +275,17 @@ export function buildNativeDataSignature(chartModel: ChartModel, nativeRowsInput
 function getNativeRowsInput(chartModel: ChartModel): number {
     const rowCount = getRawThoughtSpotData(chartModel)?.dataValue.length;
     return typeof rowCount === 'number' ? rowCount : 0;
+}
+
+function buildBackendFieldMetadata(column: { id?: string; name?: string; type?: unknown; dataType?: unknown } | undefined): BackendFieldMetadata {
+    const displayName = column?.name || column?.id || '';
+    return {
+        displayName,
+        normalizedName: normalizeBackendFieldName(displayName || column?.id || ''),
+        columnId: column?.id || '',
+        columnType: String(column?.type ?? ''),
+        dataType: String(column?.dataType ?? ''),
+    };
 }
 
 export function backendPathFromResponse(

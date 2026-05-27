@@ -54,6 +54,7 @@ import {
     fetchBackendChartData,
     getBackendRequestContext,
     normalizeBackendRowsToChartData,
+    shouldFallbackToNative,
 } from './services/backendDataClient';
 import type { BackendChartDataResponse, BackendDataError } from './services/backendDataClient';
 
@@ -92,7 +93,11 @@ interface RenderOutcome {
     summary: LastRenderSummary;
 }
 
-function render(ctx: CustomChartContext, renderId: string): RenderOutcome {
+function render(
+    ctx: CustomChartContext,
+    renderId: string,
+    path: LastRenderSummary['path'] = 'native-thoughtspot',
+): RenderOutcome {
     const renderStartMs = nowMs();
     const canvas = document.getElementById('chart') as HTMLCanvasElement | null;
     const chartModel = ctx.getChartModel();
@@ -119,7 +124,7 @@ function render(ctx: CustomChartContext, renderId: string): RenderOutcome {
             nativeDataTransformMs: 0,
             chartUpdateMs: 0,
             renderTotalMs: elapsedMs(renderStartMs),
-        });
+        }, path);
         setLastRenderSummary(summary);
         debugLog(byocRuntimeConfig.debug, '[BYOC:perf]', summary);
         logSafeError(
@@ -373,6 +378,8 @@ async function renderBackendChart(
         mode: byocRuntimeConfig.dataMode,
         dimension: request.dimension,
         metric: request.metric,
+        dimensionDisplayName: request.fields.dimension.displayName,
+        metricDisplayName: request.fields.metric.displayName,
         nativeRowsInput: requestContext.nativeRowsInput,
         effectiveBackendLimit: requestContext.effectiveBackendLimit,
         limit: request.limit,
@@ -399,6 +406,20 @@ async function renderBackendChart(
                 renderTotalMs: elapsedMs(renderStartMs),
             }, 'backend-mock');
             return { emitRenderError: false, summary };
+        }
+
+        if (shouldFallbackToNative(backendError)) {
+            const fallbackOutcome = render(ctx, renderId, 'backend-fallback-native');
+            debugLog(byocRuntimeConfig.debug, '[BYOC:backend:fallback]', {
+                requestId: backendError.requestId || request.requestId,
+                reason: backendError.code || 'BACKEND_ERROR',
+                backendStatus: backendError.statusCode || 0,
+                metric: request.metric,
+                dimension: request.dimension,
+                nativeRowsInput: requestContext.nativeRowsInput,
+                fallbackRowsRendered: fallbackOutcome.summary.rowsRendered,
+            });
+            return fallbackOutcome;
         }
 
         debugLog(byocRuntimeConfig.debug, '[BYOC:backend:error]', {
@@ -435,6 +456,10 @@ async function renderBackendChart(
         cacheHit: response.cacheHit,
         source: response.source,
         rowsReturned: response.rows.length,
+        requestedMetric: response.meta.requestedMetric,
+        resolvedMetric: response.meta.resolvedMetric?.columnName,
+        aggregation: response.meta.resolvedMetric?.aggregation,
+        fallbackEligible: response.meta.fallbackEligible ?? false,
         requestedLimit: request.limit,
         nativeRowsInput: requestContext.nativeRowsInput,
         effectiveBackendLimit: requestContext.effectiveBackendLimit,

@@ -6,6 +6,7 @@ import {
     fetchBackendChartData,
     getBackendRequestContext,
     normalizeBackendRowsToChartData,
+    shouldFallbackToNative,
 } from './backendDataClient';
 import type { BackendChartDataRequest, BackendChartDataResponse } from './backendDataClient';
 import { getByocRuntimeConfig } from '../config';
@@ -86,6 +87,26 @@ describe('backend data client', () => {
         expect(typeof request.filters.extra.nativeDataSignature).toBe('string');
     });
 
+    it('includes selected ThoughtSpot field metadata in backend requests', () => {
+        const request = buildBackendRequestFromChartContext(
+            createContextWithRows(7, 'label-0', 'Total Revenue'),
+            'r-total-revenue',
+            getByocRuntimeConfig({}),
+        );
+
+        expect(request.metric).toBe('total_revenue');
+        expect(request.fields.metric).toMatchObject({
+            displayName: 'Total Revenue',
+            normalizedName: 'total_revenue',
+            columnId: 'revenue',
+        });
+        expect(request.fields.dimension).toMatchObject({
+            displayName: 'location_name',
+            normalizedName: 'location_name',
+            columnId: 'location_name',
+        });
+    });
+
     it('changes native signature when visible rows change', () => {
         const first = createContextWithRows(5).getChartModel();
         const second = createContextWithRows(5, 'changed-label').getChartModel();
@@ -118,6 +139,12 @@ describe('backend data client', () => {
         expect(backendPathFromResponse(createResponse(false, 'mock'))).toBe('backend-mock');
         expect(backendPathFromResponse(createResponse(false, 'databricks-arrow'))).toBe('backend-databricks-arrow');
     });
+
+    it('marks safe resolver errors as native fallback eligible', () => {
+        expect(shouldFallbackToNative({ code: 'FIELD_UNRESOLVED', statusCode: 400 } as any)).toBe(true);
+        expect(shouldFallbackToNative({ code: 'BAD_REQUEST', statusCode: 400, message: 'Unsupported metric.' } as any)).toBe(true);
+        expect(shouldFallbackToNative({ code: 'CONFIG_ERROR', statusCode: 500, message: 'Missing config.' } as any)).toBe(false);
+    });
 });
 
 function createRequest(): BackendChartDataRequest {
@@ -127,6 +154,23 @@ function createRequest(): BackendChartDataRequest {
         mode: 'chart',
         dimension: 'location_name',
         metric: 'revenue',
+        fields: {
+            dimension: {
+                displayName: 'location_name',
+                normalizedName: 'location_name',
+                columnId: 'location_name',
+                columnType: 'ATTRIBUTE',
+                dataType: '',
+            },
+            metric: {
+                displayName: 'revenue',
+                normalizedName: 'revenue',
+                columnId: 'revenue',
+                columnType: 'MEASURE',
+                dataType: '',
+                aggregationLabel: 'revenue',
+            },
+        },
         filters: { extra: {} },
         sort: { field: 'value', direction: 'desc' },
         limit: 100,
@@ -172,7 +216,7 @@ function createResponse(
     };
 }
 
-function createContextWithRows(rowCount: number, firstLabel = 'label-0') {
+function createContextWithRows(rowCount: number, firstLabel = 'label-0', metricName = 'revenue') {
     const labels = Array.from({ length: rowCount }, (_value, index) =>
         index === 0 ? firstLabel : `label-${index}`,
     );
@@ -180,14 +224,14 @@ function createContextWithRows(rowCount: number, firstLabel = 'label-0') {
         getChartModel: () => ({
             columns: [
                 { id: 'location_name', name: 'location_name', type: 'ATTRIBUTE' },
-                { id: 'revenue', name: 'revenue', type: 'MEASURE' },
+                { id: 'revenue', name: metricName, type: 'MEASURE' },
             ],
             config: {
                 chartConfig: [
                     {
                         dimensions: [
                             { key: 'x', columns: [{ id: 'location_name', name: 'location_name' }] },
-                            { key: 'y', columns: [{ id: 'revenue', name: 'revenue' }] },
+                            { key: 'y', columns: [{ id: 'revenue', name: metricName }] },
                         ],
                     },
                 ],

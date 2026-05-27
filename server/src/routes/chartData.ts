@@ -60,6 +60,13 @@ export async function registerChartDataRoute(
             source = 'mock';
             formatUsed = 'chart-json';
         } else {
+            if (!validatedRequest.resolvedDimension || !validatedRequest.resolvedMetric) {
+                throw new ApiError(
+                    'FIELD_UNRESOLVED',
+                    'Backend could not safely resolve the selected fields.',
+                    400,
+                );
+            }
             if (!isDatabricksConfigured(config)) {
                 throw new ApiError('CONFIG_ERROR', 'Databricks configuration is missing.', 500);
             }
@@ -88,6 +95,23 @@ export async function registerChartDataRoute(
                 cacheKey,
                 dataVersion: validatedRequest.context.dataVersion,
                 requestId,
+                requestedDimension: validatedRequest.dimension,
+                canonicalDimension: validatedRequest.resolvedDimension?.canonicalDimension,
+                resolvedDimension: validatedRequest.resolvedDimension
+                    ? {
+                          columnName: validatedRequest.resolvedDimension.columnName,
+                      }
+                    : undefined,
+                requestedMetric: validatedRequest.metric,
+                canonicalMetric: validatedRequest.resolvedMetric?.canonicalMetric,
+                resolvedMetric: validatedRequest.resolvedMetric
+                    ? {
+                          columnName: validatedRequest.resolvedMetric.columnName,
+                          aggregation: validatedRequest.resolvedMetric.aggregation,
+                      }
+                    : undefined,
+                fallbackEligible: !config.useMockBackend &&
+                    (!validatedRequest.resolvedDimension || !validatedRequest.resolvedMetric),
             },
             timing: {
                 ...timing,
@@ -109,9 +133,10 @@ function createMockRows(request: ChartDataRequest): ChartRow[] {
     const limit = request.limit ?? 100;
     const seed = `${request.dimension}:${request.metric}:${JSON.stringify(request.filters ?? {})}`;
     const baseValue = Array.from(seed).reduce((sum, character) => sum + character.charCodeAt(0), 0);
+    const labelPrefix = request.fields?.dimension?.displayName || request.dimension;
 
     return Array.from({ length: limit }, (_, index) => ({
-        label: `${request.dimension}-${index + 1}`,
+        label: `${labelPrefix}-${index + 1}`,
         value: Math.round((baseValue + index * 37) * 100) / 100,
     }));
 }
